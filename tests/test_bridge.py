@@ -45,7 +45,12 @@ StaticFindObject=function(path)
 end
 LoadAsset=function() return {IsValid=function() return true end} end
 RegisterInitGameStatePostHook=function(callback) initHook=callback end
+RegisterLoadMapPreHook=function(callback) loadPre=callback end
+RegisterLoadMapPostHook=function(callback) loadPost=callback end
+RegisterEndPlayPreHook=function(callback) endPre=callback end
 loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if interval==1000 then loop=callback end end
+LoopInGameThreadWithDelay=function(interval,callback) loops[interval]=callback; if interval==1000 then loop=callback end;return interval end
+CancelDelayedAction=function() return true end
 ExecuteInGameThread=function(callback) callback() end
 Key={F6=117,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
@@ -348,6 +353,61 @@ class BridgeTests(unittest.TestCase):
         self.assertLess(self.lua.eval('moves[1].Y'),0)
         self.lua.execute('pc.GetMousePosition=function(self,x,y) x.LocationX=1001;y.LocationY=500;return true end;loops[33]()')
         self.assertEqual(self.lua.eval('#moves'),1)
+
+    def test_world_teardown_disables_all_viewer_callbacks_before_object_access(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.tick()
+        self.lua.execute('now=1004')
+        self.tick()
+        self.lua.execute('replayPlaying=true')
+        self.tick()
+        self.lua.execute("""
+        loadPre()
+        FindAllOf=function() error('object access during teardown') end
+        FindFirstOf=function() error('object access during teardown') end
+        keybinds[Key.C]();keybinds[Key.I]();keybinds[Key.F8]()
+        initHook({get=function() error('stale world context') end})
+        """)
+        self.assertTrue(self.lua.eval('loops[33]()'))
+        self.assertTrue(self.tick())
+        self.assertIn('viewer_stopped', (self.data / 'status.txt').read_text())
+
+    def test_initial_replay_travel_suspends_and_resumes_polling(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.lua.execute('loadPre()')
+        self.assertFalse(self.tick())
+        self.assertFalse((self.data / 'playback.txt').exists())
+        self.lua.execute('loadPost()')
+        self.tick()
+        self.assertTrue((self.data / 'playback.txt').exists())
+
+    def test_endplay_transition_stops_viewer_but_unit_death_does_not(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.tick()
+        self.lua.execute('now=1004')
+        self.tick()
+        self.lua.execute('replayPlaying=true')
+        self.tick()
+        self.lua.execute('endPre({get=function() return actor end},{get=function() return 0 end})')
+        self.assertFalse(self.lua.eval('loops[33]()'))
+        self.lua.execute("""
+        endPre({get=function() error('must not inspect actors during transition') end},{get=function() return 1 end})
+        FindAllOf=function() error('stale controller') end
+        """)
+        self.assertTrue(self.tick())
+        self.assertTrue(self.lua.eval('loops[33]()'))
+
+    def test_mouse_loop_reuses_game_thread_timer_without_queuing_callbacks(self):
+        self.setup_input()
+        self.lua.execute("""
+        replayPlaying=true
+        ExecuteInGameThread=function() error('per-frame coroutine dispatch') end
+        for i=1,100 do loops[33]() end
+        """)
+        self.assertFalse((self.data / 'status.txt').read_text().find('viewer_control_error') >= 0)
 
 
 if __name__ == '__main__':

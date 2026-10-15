@@ -29,7 +29,7 @@ Tempest Rising용 Windows 리플레이 런처입니다. `Start.cmd`를 실행하
 - 실험 모드 설치·백업 제거, 호환성 진단
 - GitHub Releases 업데이트, SHA256 검증 및 재시작
 
-설정과 진단은 `%LOCALAPPDATA%\TempestReplayLauncher`에 저장됩니다. 브리지의 명령 전송과 녹화 성공은 구분됩니다. `commands.log`, `events.log`, `playback.txt`와 실제 파일 크기를 확인할 수 있습니다. 제어 흐름 테스트 28개는 모의 호스트를 사용하며 실게임 검증을 대체하지 않습니다.
+설정과 진단은 `%LOCALAPPDATA%\TempestReplayLauncher`에 저장됩니다. 브리지의 명령 전송과 녹화 성공은 구분됩니다. `commands.log`, `events.log`, `playback.txt`와 실제 파일 크기를 확인할 수 있습니다. 제어 흐름 테스트 32개는 모의 호스트를 사용하며 실게임 검증을 대체하지 않습니다.
 
 ## 배포
 

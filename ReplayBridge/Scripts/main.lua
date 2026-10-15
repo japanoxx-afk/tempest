@@ -114,6 +114,7 @@ local function ensureReplayDriver()
     status('replay_driver_registered', 'Added DemoNetDriver; existing network drivers preserved')
 end
 local spectatorClass
+local viewerStopped, travelling = false, false
 local function setSpectator(gm)
     if valid(gm) and valid(spectatorClass) then
         gm.ReplaySpectatorPlayerControllerClass = spectatorClass
@@ -129,6 +130,7 @@ local function prepareSpectator()
         if valid(cls) then setSpectator(cls:GetCDO()) end
     end
     RegisterInitGameStatePostHook(function(context)
+        if viewerStopped then return end
         local ok, err = pcall(function()
             local actor = context
             local got, value = pcall(function() return context:get() end)
@@ -139,12 +141,53 @@ local function prepareSpectator()
     end)
 end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
+-- Reuse a stable game-thread timer. Creating Lua coroutine callbacks from an
+-- async loop every 33 ms stresses UE4SS's shared Lua registry/collector.
+local function gameLoop(interval, callback)
+    local handle
+    handle = LoopInGameThreadWithDelay(interval,function()
+        local stop = callback()
+        if stop then CancelDelayedAction(handle) end
+        return stop
+    end)
+end
 local worldKey, recordingWorld, startedAt, playSent, prepared
 local viewerInitialized = false
 local viewerActors = {}
 local cameraIndex = 1
 local followTarget
 local inputController
+local configuredWidgets = {}
+local viewerControllerName
+local function stopViewer(reason)
+    if viewerStopped then return end
+    viewerStopped = true
+    followTarget = nil
+    configuredWidgets = {}
+    status('viewer_stopped',reason)
+end
+if mode == 'play' then
+    RegisterLoadMapPreHook(function()
+        travelling = true
+        followTarget = nil
+        if viewerInitialized then
+            stopViewer('Replay world is leaving; viewer callbacks disabled before teardown')
+        end
+    end)
+    RegisterLoadMapPostHook(function() travelling = false end)
+    RegisterEndPlayPreHook(function(context, reason)
+        if not viewerInitialized or viewerStopped then return end
+        local why = reason:get()
+        if why == 1 or why == 4 then
+            stopViewer('Replay EndPlay transition; viewer callbacks disabled before teardown')
+        else
+            local actor = context:get()
+            if valid(actor) and actor:GetFullName() == viewerControllerName then
+                stopViewer('Replay controller EndPlay; viewer callbacks disabled before teardown')
+            end
+        end
+    end)
+end
 local function liveWidgets(className, action)
     for _, widget in ipairs(FindAllOf(className) or {}) do
         if valid(widget) and widget:GetFullName():find('/Engine/Transient',1,true) then action(widget) end
@@ -156,19 +199,24 @@ local function configureViewer(pc)
     pc.bEnableMouseOverEvents = true
     pc.bCanSelectEnemy = true
     pc.bCanClearSelection = true
-    if valid(pc.Pawn) then pc:SetViewTargetWithBlend(pc.Pawn,0.0,0,0.0,false) end
+
     local input = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
     if valid(input) and inputController ~= pc:GetFullName() then
         input:SetInputMode_GameAndUIEx(pc,nil,0,false,false)
         inputController = pc:GetFullName()
     end
     liveWidgets('TedThirdPartySpectatorHud',function(widget)
+        local name = widget:GetFullName()
+        if configuredWidgets[name] then return end
         local slot = widget.Box_StatsOverview.Slot
         slot:SetAnchors({Minimum={X=0,Y=0},Maximum={X=0,Y=0}})
         slot:SetAlignment({X=0,Y=0})
         slot:SetPosition({X=16,Y=90})
+        configuredWidgets[name] = true
     end)
     liveWidgets('TedMinimapWidget',function(widget)
+        local name = widget:GetFullName()
+        if configuredWidgets[name] then return end
         widget.bIgnoreMinimapRequirements = true
         widget:SetMiniMapStateFlag(0,true) -- Enabled
         widget:SetMiniMapStateFlag(1,true) -- Eligible
@@ -178,16 +226,19 @@ local function configureViewer(pc)
         widget:SetDrawStructures(true)
         widget:SetDrawResources(true)
         widget:OnMinimapStateChanged(true)
+        configuredWidgets[name] = true
     end)
 end
 if mode == 'play' then
     local function bind(key, action)
         RegisterKeyBind(key, function()
             ExecuteInGameThread(function()
+                if viewerStopped or travelling then return end
                 local ok, err = pcall(function()
                     local subsystem = FindFirstOf('ReplaySubsystem')
+                    if not valid(subsystem) or not subsystem:IsPlaying() then return end
                     local pc = getLocalPlayerController()
-                    if not valid(subsystem) or not subsystem:IsPlaying() or not valid(pc) then return end
+                    if not valid(pc) then return end
                     if not valid(pc.Pawn) then return end
                     action(pc,pc.Pawn)
                 end)
@@ -232,16 +283,17 @@ if mode == 'play' then
     end)
     bind(Key.F8,function(pc) command(pc,'demopause') end)
     local inputPending, inputErrors, mouseWasDown = false, 0, false
-    LoopAsync(33,function()
-        if inputPending then return false end
+    gameLoop(33,function()
+        if viewerStopped then return true end
+        if travelling or inputPending then return false end
         inputPending = true
-        ExecuteInGameThread(function()
+        local function tick()
+            if viewerStopped or travelling then inputPending=false; return end
             local ok,err = pcall(function()
                 local subsystem = FindFirstOf('ReplaySubsystem')
+                if not valid(subsystem) or not subsystem:IsPlaying() then followTarget=nil; return end
                 local pc = getLocalPlayerController()
-                if not valid(subsystem) or not subsystem:IsPlaying() or not valid(pc) or not valid(pc.Pawn) then
-                    followTarget = nil; return
-                end
+                if not valid(pc) or not valid(pc.Pawn) then followTarget=nil; return end
                 local down = pc:IsInputKeyDown({KeyName=FName('LeftMouseButton')})
                 if down and not mouseWasDown then followTarget = nil end
                 mouseWasDown = down
@@ -263,12 +315,12 @@ if mode == 'play' then
                 end
                 if position then
                     pc.Pawn:K2_SetActorLocation(position,false,{},true)
-                    pc.Pawn.PlayerCameraComponent:InterpolateCameraToLocation(position,0.04,1.0,-1.0,0.0,false,true,1.0,false)
                 end
             end)
             inputPending = false
             if not ok then inputErrors=inputErrors+1; status('viewer_control_error',tostring(err)) end
-        end)
+        end
+        tick()
         return inputErrors>=3
     end)
 end
@@ -276,11 +328,20 @@ local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local pending = false
 local errors = 0
-LoopAsync(1000, function()
-    if pending then return false end
+gameLoop(1000, function()
+    if viewerStopped then return true end
+    if travelling or pending then return false end
     pending = true
-    ExecuteInGameThread(function()
+    local function tick()
+        if viewerStopped or travelling then pending=false; return end
         local ok, err = pcall(function()
+            if mode == 'play' and viewerInitialized then
+                local subsystem = FindFirstOf('ReplaySubsystem')
+                if not valid(subsystem) or not subsystem:IsPlaying() then
+                    stopViewer('Replay playback ended; viewer callbacks disabled')
+                    return
+                end
+            end
             local pc = getLocalPlayerController()
             if not valid(pc) then return end
             local control = read(home .. 'control.txt')
@@ -371,6 +432,7 @@ LoopAsync(1000, function()
                             end
                             pc:SetViewTargetWithBlend(cameraPawn,0.0,0,0.0,false)
                         end
+                        viewerControllerName = pc:GetFullName()
                         viewerInitialized = true
                         status('viewer_initializing', 'Requested recorded game-mode HUD and spectator camera')
                     end
@@ -452,6 +514,7 @@ LoopAsync(1000, function()
             errors = errors + 1
             status('bridge_error', tostring(err))
         end
-    end)
+    end
+    tick()
     return errors >= 3 -- fail closed rather than repeatedly issuing incompatible calls
 end)
