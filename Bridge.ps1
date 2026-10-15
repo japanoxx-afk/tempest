@@ -40,11 +40,36 @@ function Remove-ReplayBridge([string]$GamePath) {
  if (Test-Path $p.Loader) { Move-Item -LiteralPath $p.Loader -Destination (Join-Path $backup 'dwmapi.dll') }
  Move-Item -LiteralPath $p.Runtime -Destination (Join-Path $backup 'ue4ss')
  if (Test-Path (Join-Path $p.Data 'request.txt')) { Remove-Item -LiteralPath (Join-Path $p.Data 'request.txt') }
+ $config=Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Config\Windows\Engine.ini'
+ if (Test-Path -LiteralPath $config) {
+  $text=[IO.File]::ReadAllText($config)
+  $updated=[regex]::Replace($text,'(?ms)^; BEGIN TempestReplayLauncher\r?\n.*?^; END TempestReplayLauncher\r?\n?','')
+  if ($text -ne $updated) { [IO.File]::WriteAllText($config,$updated,(New-Object Text.UTF8Encoding($false))) }
+ }
+}
+function Initialize-ReplayConfig([string]$ConfigPath=(Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Config\Windows\Engine.ini')) {
+ $content=if (Test-Path -LiteralPath $ConfigPath) { [IO.File]::ReadAllText($ConfigPath) } else { '' }
+ if ($content -match 'DefName\s*=\s*"DemoNetDriver"') { return }
+ $backupRoot=Join-Path $env:LOCALAPPDATA 'TempestReplayLauncher\config-backups'
+ New-Item $backupRoot -ItemType Directory -Force | Out-Null
+ if (Test-Path -LiteralPath $ConfigPath) { Copy-Item -LiteralPath $ConfigPath -Destination (Join-Path $backupRoot ('Engine-'+[guid]::NewGuid().ToString('N')+'.ini')) }
+ New-Item (Split-Path $ConfigPath -Parent) -ItemType Directory -Force | Out-Null
+ $block=@'
+; BEGIN TempestReplayLauncher
+[/Script/Engine.GameEngine]
++NetDriverDefinitions=(DefName="DemoNetDriver",DriverClassName="/Script/Engine.DemoNetDriver",DriverClassNameFallback="/Script/Engine.DemoNetDriver")
+; END TempestReplayLauncher
+'@
+ [IO.File]::WriteAllText($ConfigPath,($content.TrimEnd()+"`r`n`r`n"+$block+"`r`n"),(New-Object Text.UTF8Encoding($false)))
 }
 function Start-BridgeSession([string]$GamePath,[ValidateSet('probe','record','play')][string]$Mode,[string]$Replay='') {
  if (Get-Process -Name 'Tempest-Win64-Shipping','Tempest' -ErrorAction SilentlyContinue) { throw '새 브리지 세션을 시작하려면 게임을 먼저 종료하세요.' }
  $p=Get-BridgePaths $GamePath
  if (-not (Test-Path (Join-Path $p.Runtime 'Mods\TempestReplayBridge\Scripts\main.lua'))) { throw '먼저 실험 모드를 설치하세요.' }
+ if (-not (Test-Path (Join-Path $p.Runtime 'tempest-launcher-owned.json'))) { throw '이 런처가 설치한 모드가 아닙니다.' }
+ # Update the Lua bridge on the next clean launch; never reload into a live match.
+ Copy-Item (Join-Path $script:BridgeSourceRoot 'ReplayBridge\Scripts\main.lua') (Join-Path $p.Runtime 'Mods\TempestReplayBridge\Scripts\main.lua') -Force
+ if ($Mode -ne 'probe') { Initialize-ReplayConfig }
  if ($Replay -and $Replay -notmatch '^[a-zA-Z0-9_-]+$') { throw '리플레이 파일명에 지원하지 않는 문자가 있습니다.' }
  New-Item $p.Data -ItemType Directory -Force | Out-Null
  $session=[guid]::NewGuid().ToString('N')

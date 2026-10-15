@@ -19,7 +19,7 @@ $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
  <StackPanel Grid.Row="1" Margin="0,18,0,8"><TextBlock Text="게임 설치 폴더"/><DockPanel><Button Name="BrowseGame" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="GamePath"/></DockPanel><TextBlock Text="리플레이 폴더"/><DockPanel><Button Name="BrowseReplay" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="ReplayPath"/></DockPanel></StackPanel>
  <TextBlock Grid.Row="2" Text="리플레이 라이브러리 · .replay" FontSize="18" Margin="4,6"/>
  <ListView Grid.Row="3" Name="ReplayList" Background="#1B2935" Foreground="White" Margin="4"><ListView.View><GridView><GridViewColumn Header="파일" DisplayMemberBinding="{Binding Name}" Width="380"/><GridViewColumn Header="수정 시간" DisplayMemberBinding="{Binding LastWriteTime}" Width="200"/><GridViewColumn Header="바이트" DisplayMemberBinding="{Binding Length}" Width="100"/></GridView></ListView.View></ListView>
- <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 시도 (실험 모드 필요 · 작동 미검증)"/><CheckBox Name="Experimental" Margin="5,8" Content="미검증 관전자 리플레이 재생 시도 허용"/><Button Name="Play" Content="선택 리플레이 관전자 재생 시도" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 단계: 기록 요청과 실제 녹화 성공은 다릅니다. 생성 파일 크기와 상태를 확인하세요." TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
+ <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 시도 (실험 모드 필요 · 작동 미검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="미검증 관전자 리플레이 재생 시도 허용"/><Button Name="Play" Content="선택 리플레이 관전자 재생 시도" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 단계: 기록 요청과 실제 녹화 성공은 다릅니다. 생성 파일 크기와 상태를 확인하세요." TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
  <TextBlock Grid.Row="5" Name="Status" TextWrapping="Wrap" Margin="4,12,4,0" Foreground="#A8B7C5"/>
  </Grid>
 </Window>
@@ -70,8 +70,10 @@ $timer.Add_Tick({
   $p=Get-BridgePaths $settings.game; $statusFile=Join-Path $p.Data 'status.txt'
   $lines=@(if (Test-Path $statusFile) { Get-Content $statusFile -Encoding UTF8 })
   if ($lines.Count -ge 4 -and $lines[0] -eq $script:bridgeSession) {
-   $ui.BridgeStatus.Text="브리지: $($lines[2]) · $($lines[3])"
-   if ($lines[2] -eq 'record_requested') {
+   $labels=@{record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료'}
+   $label=if ($labels.ContainsKey($lines[2])) { $labels[$lines[2]] } else { $lines[2] }
+   $ui.BridgeStatus.Text="브리지: $label · $($lines[3])"
+   if ($lines[2] -in @('record_requested','record_driver_active')) {
     $name=($lines[3] -split ';')[0]; $file=Join-Path (Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos') ($name+'.replay')
     if (Test-Path -LiteralPath $file) { $ui.BridgeStatus.Text += " · 파일 존재: $((Get-Item -LiteralPath $file).Length) 바이트 (재생 검증 필요)" }
     else { $ui.BridgeStatus.Text += ' · 기록 파일 미확인: 녹화 성공 아님' }

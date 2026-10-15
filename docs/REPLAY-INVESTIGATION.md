@@ -35,4 +35,8 @@ The bridge consumes a short-lived launcher request. Probe mode writes reflected 
 5. Verify spectator camera, HUD, player selection, fog-of-war view, and absence of live match side effects. Adapt actual reflected signatures as needed.
 6. Only after local success, evaluate custom multiplayer compatibility and recorded information completeness. Ranked multiplayer compatibility is unknown.
 
-At the end of the development pass the game was still running, so installation and these live tests were not performed. This is a prototype; automatic recording and spectator playback are **not verified**.
+The initial development pass did not perform live tests. Subsequent user tests confirmed `probe_ready` and a loaded record session. Runtime UE4SS logs show `record_requested` on `MAP_MP_OvergrownOasis_2P_P`, followed by return to the main menu, but no `.replay` file was found in either user Saved data or the game installation. Recording success is therefore not established.
+
+The runtime reflection confirms match-state functions on `TedPlayerController`. The patch uses that controller, captures `ConsoleCommand` output to `commands.log`, checks `World.DemoNetDriver` after dispatch, and reports `record_failed` after eight seconds without a driver. A missing replay driver definition is a hypothesis, not a confirmed diagnosis. Clean record/play launches now add the standard DemoNetDriver configuration if absent, backing up Engine.ini and preserving existing network drivers. Removal deletes only the tagged configuration block. The [Epic support response about missing driver definitions](https://forums.unrealengine.com/t/demonetdriver-failed-to-create/330514) describes this configuration requirement.
+
+The updated bridge synchronizes on the next clean launcher start without requiring full loader reinstallation. Ten mocked host tests pass, including missing-driver failure reporting. Actual successful recording and spectator playback remain **unverified**.

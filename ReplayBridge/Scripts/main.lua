@@ -17,7 +17,7 @@ local function write(path, text)
     os.remove(path); assert(os.rename(path .. '.tmp', path))
 end
 local function status(state, detail)
-    write(home .. 'status.txt', table.concat({session, tostring(os.time()), state, (detail or ''):gsub('[\r\n]', ' ')}, '\n'))
+    write(home .. 'status.txt', table.concat({session, tostring(os.time()), state, ((detail or ''):gsub('[\r\n]', ' '))}, '\n'))
     print('[TempestReplay] ' .. state .. ': ' .. (detail or '') .. '\n')
 end
 local function valid(o) return o ~= nil and o:IsValid() end
@@ -48,9 +48,16 @@ local function diagnostics()
     write(home .. 'reflection.txt', table.concat(text, '\n'))
 end
 local function command(pc, cmd)
-    local lib = StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
-    assert(valid(lib), 'KismetSystemLibrary unavailable')
-    lib:ExecuteConsoleCommand(pc, cmd, pc)
+    -- Unlike Kismet's void wrapper, ConsoleCommand returns engine diagnostics.
+    local response = pc:ConsoleCommand(cmd, false)
+    local output = response and tostring(response) or ''
+    if response and type(response) ~= 'string' then
+        local ok, text = pcall(function() return response:ToString() end)
+        if ok then output = text end
+    end
+    local f = assert(io.open(home .. 'commands.log', 'ab'))
+    f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' ' .. cmd .. '\n' .. output .. '\n'); f:close()
+    return output
 end
 local spectatorClass
 local function setSpectator(gm)
@@ -80,6 +87,7 @@ end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
 local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated
 local recordingIndex = 0
+local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local pending = false
 local errors = 0
 LoopAsync(1000, function()
@@ -93,8 +101,12 @@ LoopAsync(1000, function()
             if not valid(world) then return end
             local key = world:GetFullName()
             if key ~= worldKey then
+                if recordingWorld then
+                    status('record_session_left', (recordingName or '') .. '; driver verified=' .. tostring(recordingVerified == true))
+                end
                 worldKey = key; startedAt = os.time(); diagnostics()
-                status('world_ready', key)
+                if not recordingWorld then status('world_ready', key) end
+                recordingWorld = nil
             end
             if mode == 'probe' then status('probe_ready', key); return end
             local gs = world.GameState
@@ -122,17 +134,28 @@ LoopAsync(1000, function()
                 end
             elseif mode == 'record' then
                 if not valid(gs) or not gs:IsA('/Script/Tempest.TedGameState') then return end
-                local began = gs:HasMatchStarted()
-                local ended = gs:HasMatchEnded()
+                local began = pc:HasMatchStarted()
+                local ended = pc:HasMatchEnded()
                 if ended and recordingWorld == key then
                     command(pc, 'demostop'); recordingWorld = nil
                     status('stop_requested', 'Match ended; verify final replay file')
                 elseif began and not ended and recordingWorld ~= key then
                     recordingIndex = recordingIndex + 1
                     local name = 'Tempest_' .. os.date('%Y%m%d_%H%M%S') .. '_' .. session:sub(1,8) .. '_' .. recordingIndex
-                    command(pc, 'demorec ' .. name)
+                    local output = command(pc, 'demorec ' .. name)
                     recordingWorld = key
-                    status('record_requested', name .. '; launcher must verify replay file growth')
+                    recordingRequestedAt = os.time(); recordingName = name
+                    recordingVerified = false; recordingFailed = false
+                    status('record_requested', name .. '; ' .. output)
+                elseif recordingWorld == key and not recordingVerified and not recordingFailed then
+                    local driver = member(world, 'DemoNetDriver')
+                    if valid(driver) then
+                        recordingVerified = true
+                        status('record_driver_active', recordingName .. '; driver active; file/playback validation still required')
+                    elseif os.time() - recordingRequestedAt >= 8 then
+                        recordingFailed = true
+                        status('record_failed', recordingName .. '; DemoNetDriver was not created. See commands.log')
+                    end
                 end
             end
         end)

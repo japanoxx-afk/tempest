@@ -13,7 +13,9 @@ gs = {IsValid=function() return true end, IsA=function() return true end,
 world = {GameState=gs, IsValid=function() return true end,
  GetFullName=function() return worldName end}
 worldName='World_A'
-pc = {IsValid=function() return true end, GetWorld=function() return world end}
+pc = {IsValid=function() return true end, GetWorld=function() return world end,
+ HasMatchStarted=function() return began end, HasMatchEnded=function() return ended end,
+ ConsoleCommand=function(self, cmd, writeToLog) table.insert(commands,cmd); return commandOutput or '' end}
 lib = {IsValid=function() return true end,
  ExecuteConsoleCommand=function(self, context, cmd) table.insert(commands,cmd) end}
 os.getenv=function() return testRoot end
@@ -112,13 +114,32 @@ class BridgeTests(unittest.TestCase):
 
     def test_incompatible_api_stops_after_three_errors(self):
         self.start()
-        self.lua.execute('gs.HasMatchStarted=function() error("incompatible API") end')
+        self.lua.execute('pc.HasMatchStarted=function() error("incompatible API") end')
         self.tick()
         self.tick()
         self.tick()
         self.assertTrue(self.tick())
         self.assertEqual(self.commands(), [])
         self.assertIn('bridge_error', (self.data / 'status.txt').read_text())
+
+    def test_no_driver_is_reported_as_failure(self):
+        self.start()
+        self.lua.globals().began = True
+        self.lua.globals().commandOutput = 'DemoNetDriver definition missing'
+        self.tick()
+        self.lua.globals().now = 1010
+        self.tick()
+        self.assertIn('record_failed', (self.data / 'status.txt').read_text())
+        self.assertIn('definition missing', (self.data / 'commands.log').read_text())
+        self.assertEqual(len(self.commands()), 1)
+
+    def test_driver_activation_is_reported_separately(self):
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.lua.execute('world.DemoNetDriver={IsValid=function() return true end}')
+        self.tick()
+        self.assertIn('record_driver_active', (self.data / 'status.txt').read_text())
 
 
 if __name__ == '__main__':
