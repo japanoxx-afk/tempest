@@ -1,0 +1,27 @@
+name: Launcher release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package and validate
+        shell: pwsh
+        run: |
+          $version = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw 'Tag/version mismatch' }
+          foreach ($path in @('Launcher.ps1','Update.ps1')) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          Compress-Archive -Path Launcher.ps1,Start.cmd,Update.ps1,version.json,README.md -DestinationPath TempestReplayLauncher.zip
+          (Get-FileHash TempestReplayLauncher.zip -Algorithm SHA256).Hash.ToLowerInvariant() | Set-Content TempestReplayLauncher.zip.sha256 -Encoding ascii
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME TempestReplayLauncher.zip TempestReplayLauncher.zip.sha256 --title "Tempest Replay Launcher $env:GITHUB_REF_NAME" --generate-notes
