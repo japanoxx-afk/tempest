@@ -125,7 +125,7 @@ local function prepareSpectator()
     end)
 end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
-local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated, driverPrepared
+local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local pending = false
@@ -142,21 +142,23 @@ LoopAsync(1000, function()
             local key = world:GetFullName()
             if key ~= worldKey then
                 if recordingWorld then
-                    status('record_session_left', (recordingName or '') .. '; driver verified=' .. tostring(recordingVerified == true))
+                    if recordingFailed or not recordingVerified then
+                        status('record_failed', (recordingName or '') .. '; match left without an active recording driver; no recording success')
+                    else
+                        status('record_session_left', (recordingName or '') .. '; driver verified=true; validate replay file')
+                    end
                 end
                 worldKey = key; startedAt = os.time(); diagnostics()
                 if not recordingWorld then status('world_ready', key) end
                 recordingWorld = nil
             end
             if mode == 'probe' then status('probe_ready', key); return end
-            if not driverPrepared then
-                ensureReplayDriver(); driverPrepared = true; diagnostics()
-            end
             local gs = world.GameState
             if mode == 'play' then
                 if not prepared then prepareSpectator(); prepared = true end
                 if not playSent and os.time() - startedAt >= 3 then
                     assert(replay ~= '', 'Replay name missing')
+                    ensureReplayDriver(); diagnostics()
                     playSent = true -- never retry dispatch: restarting playback loops would lose progress
                     command(pc, 'demoplay ' .. replay)
                     status('play_requested', replay .. '; not a playback success acknowledgement')
@@ -183,6 +185,9 @@ LoopAsync(1000, function()
                     command(pc, 'demostop'); recordingWorld = nil
                     status('stop_requested', 'Match ended; verify final replay file')
                 elseif began and not ended and recordingWorld ~= key then
+                    -- Tempest rebuilds NetDriverDefinitions on travel. Register
+                    -- in the match world immediately before issuing demorec.
+                    ensureReplayDriver(); diagnostics()
                     recordingIndex = recordingIndex + 1
                     local name = 'Tempest_' .. os.date('%Y%m%d_%H%M%S') .. '_' .. session:sub(1,8) .. '_' .. recordingIndex
                     local output = command(pc, 'demorec ' .. name)

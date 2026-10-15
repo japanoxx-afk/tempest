@@ -166,6 +166,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_live_driver_registration_preserves_game_driver(self):
         self.start()
+        self.lua.globals().began = True
         self.tick()
         self.tick()
         self.assertEqual(self.lua.eval('#definitions'), 2)
@@ -177,6 +178,26 @@ class BridgeTests(unittest.TestCase):
         self.start('probe')
         self.tick()
         self.assertEqual(self.lua.eval('#definitions'), 1)
+
+    def test_travel_reset_is_repaired_before_next_recording(self):
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.lua.execute("definitions[2]=nil; worldName='World_B'")
+        self.tick()
+        self.assertEqual(self.lua.eval('#definitions'), 2)
+        self.assertEqual(self.lua.eval('definitions[2].DefName:ToString()'), 'DemoNetDriver')
+        self.assertEqual(len(self.commands()), 2)
+
+    def test_match_exit_preserves_recording_failure(self):
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.lua.globals().now = 1010
+        self.tick()
+        self.lua.execute("worldName='MainMenu'; began=false; gs.IsA=function() return false end")
+        self.tick()
+        self.assertIn('record_failed', (self.data / 'status.txt').read_text())
 
 
 if __name__ == '__main__':
