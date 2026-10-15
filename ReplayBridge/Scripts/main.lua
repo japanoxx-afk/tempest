@@ -74,9 +74,30 @@ local function command(pc, cmd)
     assert(valid(lib) and valid(fn), 'Reflected ExecuteConsoleCommand is unavailable; recording unsupported by this bridge')
     local f = assert(io.open(home .. 'commands.log', 'ab'))
     f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' REQUEST ' .. cmd .. '\n'); f:close()
-    lib:CallFunction(fn, pc, cmd, pc)
+    lib:ExecuteConsoleCommand(pc, cmd, pc)
     -- This UFunction returns void: dispatch has no success acknowledgement.
     return 'Kismet dispatch returned; engine success unknown'
+end
+local function ensureReplayDriver()
+    local engine = UE.GetEngine()
+    assert(valid(engine), 'Engine instance unavailable')
+    local definitions = engine.NetDriverDefinitions
+    local found = false
+    definitions:ForEach(function(_, entry)
+        if entry:get().DefName:ToString() == 'DemoNetDriver' then found = true end
+    end)
+    if found then return end
+    -- Pinned UE4SS LuaTArray.cpp grows on indexed assignment, and
+    -- LuaUObject.cpp push_structproperty accepts a table for struct fields.
+    local count = #definitions
+    definitions[count + 1] = {
+        DefName = FName('DemoNetDriver'),
+        DriverClassName = FName('/Script/Engine.DemoNetDriver'),
+        DriverClassNameFallback = FName('/Script/Engine.DemoNetDriver')
+    }
+    assert(#definitions == count + 1 and definitions[count + 1].DefName:ToString() == 'DemoNetDriver',
+        'Replay driver registration failed')
+    status('replay_driver_registered', 'Added DemoNetDriver; existing network drivers preserved')
 end
 local spectatorClass
 local function setSpectator(gm)
@@ -104,7 +125,7 @@ local function prepareSpectator()
     end)
 end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
-local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated
+local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated, driverPrepared
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local pending = false
@@ -128,6 +149,9 @@ LoopAsync(1000, function()
                 recordingWorld = nil
             end
             if mode == 'probe' then status('probe_ready', key); return end
+            if not driverPrepared then
+                ensureReplayDriver(); driverPrepared = true; diagnostics()
+            end
             local gs = world.GameState
             if mode == 'play' then
                 if not prepared then prepareSpectator(); prepared = true end
@@ -145,7 +169,7 @@ LoopAsync(1000, function()
                             local count = 0
                             fn:ForEachProperty(function() count = count + 1 end)
                             assert(count == 0, 'Spectator HUD signature needs an adapter; see reflection.txt')
-                            hud:CallFunction(fn)
+                            hud:ActivateMatchSpectatorUI()
                             hudActivated = true
                             status('spectator_ui_requested', 'Verify camera, full map, statistics and timeline in game')
                         end

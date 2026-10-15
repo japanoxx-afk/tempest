@@ -18,12 +18,19 @@ pc = {IsValid=function() return true end, GetWorld=function() return world end,
  ConsoleCommand={type='TrivialObject'}}
 consoleFunction={IsValid=function() return true end}
 lib = {IsValid=function() return true end,
- CallFunction=function(self, fn, context, cmd, player) table.insert(commands,cmd) end}
+ CallFunction=function() error('Unbound UFunction context') end,
+ ExecuteConsoleCommand=function(self, context, cmd, player) table.insert(commands,cmd) end}
+FName=function(text) return {ToString=function() return text end} end
+definitions = {{DefName=FName('GameNetDriver'),DriverClassName=FName('Hydra.RedstoneNetDriver')}}
+definitions.ForEach=function(self, callback)
+ for index, value in ipairs(self) do callback(index,{get=function() return value end}) end
+end
+engine={IsValid=function() return true end, NetDriverDefinitions=definitions}
 os.getenv=function() return testRoot end
 os.time=function() return now end
 os.date=function() return '20261016_120000' end
 print=function() end
-package.preload.UEHelpers=function() return {GetPlayerController=function() return pc end, GetEngine=function() return invalid end} end
+package.preload.UEHelpers=function() return {GetPlayerController=function() return pc end, GetEngine=function() return engine end} end
 StaticFindObject=function(path)
  if path=='/Script/Engine.Default__KismetSystemLibrary' then return lib end
  if path=='/Script/Engine.KismetSystemLibrary:ExecuteConsoleCommand' then return consoleFunction end
@@ -156,6 +163,20 @@ class BridgeTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.commands(), [])
         self.assertIn('unavailable', (self.data / 'status.txt').read_text())
+
+    def test_live_driver_registration_preserves_game_driver(self):
+        self.start()
+        self.tick()
+        self.tick()
+        self.assertEqual(self.lua.eval('#definitions'), 2)
+        self.assertEqual(self.lua.eval('definitions[1].DefName:ToString()'), 'GameNetDriver')
+        self.assertEqual(self.lua.eval('definitions[1].DriverClassName:ToString()'), 'Hydra.RedstoneNetDriver')
+        self.assertEqual(self.lua.eval('definitions[2].DriverClassName:ToString()'), '/Script/Engine.DemoNetDriver')
+
+    def test_probe_does_not_register_driver(self):
+        self.start('probe')
+        self.tick()
+        self.assertEqual(self.lua.eval('#definitions'), 1)
 
 
 if __name__ == '__main__':
