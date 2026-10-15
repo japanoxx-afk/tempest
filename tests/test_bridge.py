@@ -45,9 +45,9 @@ StaticFindObject=function(path)
 end
 LoadAsset=function() return {IsValid=function() return true end} end
 RegisterInitGameStatePostHook=function(callback) initHook=callback end
-LoopAsync=function(interval, callback) loop=callback end
+loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if interval==1000 then loop=callback end end
 ExecuteInGameThread=function(callback) callback() end
-Key={F6=117,F8=119,I=73,J=74,K=75,L=76}; keybinds={}
+Key={F6=117,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
 '''
 
@@ -288,6 +288,66 @@ class BridgeTests(unittest.TestCase):
         self.start('play', replay='TestReplay')
         self.lua.execute('keybinds[Key.F8]()')
         self.assertEqual(self.commands(), [])
+
+    def setup_input(self):
+        self.setup_viewer()
+        self.lua.execute("""
+        moves={}; selected={{get=function() return actor end}}; position={X=100,Y=200,Z=0}; down=false
+        actor.K2_GetActorLocation=function() return position end
+        pc.Pawn={IsValid=function() return true end,
+          K2_GetActorLocation=function() return {X=0,Y=0,Z=0} end,
+          K2_SetActorLocation=function(self,p) table.insert(moves,p) end,
+          PlayerCameraComponent={InterpolateCameraToLocation=function() end}}
+        pc.GetSelectedPawns=function() return selected end
+        pc.IsInputKeyDown=function() return down end
+        pc.GetMousePosition=function(self,x,y) x.LocationX=500;y.LocationY=500;return true end
+        pc.GetViewportSize=function(self,x,y) x.SizeX=1000;y.SizeY=1000 end
+        """)
+        self.start('play', replay='TestReplay')
+
+    def test_camera_input_does_not_run_in_live_game(self):
+        self.setup_input()
+        self.lua.execute('keybinds[Key.C]();loops[33]()')
+        self.assertEqual(self.lua.eval('#moves'),0)
+
+    def test_selected_target_is_followed_and_click_cancels_tracking(self):
+        self.setup_input()
+        self.lua.execute('replayPlaying=true;keybinds[Key.C]();loops[33]()')
+        self.assertEqual(self.lua.eval('moves[1].X'),100)
+        self.lua.execute('position.X=300;loops[33]()')
+        self.assertEqual(self.lua.eval('moves[2].X'),300)
+        self.lua.execute('down=true;loops[33]()')
+        self.assertEqual(self.lua.eval('#moves'),2)
+
+    def test_dead_target_stops_tracking(self):
+        self.setup_input()
+        self.lua.execute('replayPlaying=true;keybinds[Key.C]();actor.IsAlive=function() return false end;loops[33]()')
+        self.assertEqual(self.lua.eval('#moves'),0)
+
+    def test_i_toggles_live_statistics_without_camera_movement(self):
+        self.setup_input()
+        self.lua.execute("""
+        toggles=0
+        widget={IsValid=function() return true end,
+         GetFullName=function() return 'Widget /Engine/Transient.HUD' end,
+         SingularStatShow_ButtonClick=function() toggles=toggles+1 end}
+        local previous=FindAllOf
+        FindAllOf=function(cls) if cls=='TedThirdPartySpectatorHud' then return {widget} end;return previous(cls) end
+        replayPlaying=true;keybinds[Key.I]()
+        """)
+        self.assertEqual(self.lua.eval('toggles'),1)
+        self.assertEqual(self.lua.eval('#moves'),0)
+
+    def test_right_edge_moves_camera_right_and_outside_viewport_is_ignored(self):
+        self.setup_input()
+        self.lua.execute("""
+        replayPlaying=true
+        pc.GetMousePosition=function(self,x,y) x.LocationX=999;y.LocationY=500;return true end
+        loops[33]()
+        """)
+        self.assertLess(self.lua.eval('moves[1].Y'),0)
+        self.lua.execute('pc.GetMousePosition=function(self,x,y) x.LocationX=1001;y.LocationY=500;return true end;loops[33]()')
+        self.assertEqual(self.lua.eval('#moves'),1)
 
 
 if __name__ == '__main__':

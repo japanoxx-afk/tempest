@@ -44,3 +44,18 @@ No game binaries, encryption keys, replay contents or account logs are included 
 ## Final controls and pause validation
 
 Final clean session 389b9d6f44a94bc0ad292482fa9ee839 used production source SHA256 `1CA601C89913C0B0B621125583D5808431A1122EDC29A13F511AD8356BC2412A`. The F6 key switched from the recorded GDF base to the recorded Dynasty base, including its machine shop and power plant. Camera movement requires aligning both the possessed pawn and the separate engine spectator pawn. I moved the scene using the native camera component. F8 paused delivery at replay time 48.63148; the pauser belonged to the new local spectator and was preserved by the bridge. No development harness or material substitution was present.
+
+
+## v0.3.1 spectator interaction validation
+
+Native testing on the same installed build identified a camera mismatch: the engine-created SpectatorPawn was the view target while Tempest's minimap and selection operate on pc.Pawn (TedSpectator_BP). Selecting the game-owned pawn as view target restores native minimap camera navigation. Cursor, click and mouse-over flags plus WidgetBlueprintLibrary.SetInputMode_GameAndUIEx restore pointer interaction without hiding it during capture.
+
+Only transient live TedThirdPartySpectatorHud widgets are repositioned. Box_StatsOverview has a CanvasPanelSlot; anchors/alignment are top-left and position is (16,90) in widget coordinates. I invokes SingularStatShow_ButtonClick and no longer pans the camera. Native screenshots confirmed both hiding and showing the panel.
+
+The live TedMinimapWidget uses Enabled and Eligible enum flags (indexes 0 and 1), bIgnoreMinimapRequirements and fog drawing disabled. Screenshots showed the full bright map and camera frustum. Clicking the enemy-base region moved to the Dynasty base and native clicking selected the construction yard with its details panel.
+
+C obtains GetSelectedPawns entries by unwrapping UE4SS RemoteUnrealParam:get(). In clean production session 9e1461a9fca243d39863607e5f90d294 (no developer harness), C activated tracking of a selected GDF construction yard and a second C reported Camera tracking off, without viewer errors. The 33 ms replay-only camera loop updates the target position and cancels on a fresh left click, manual edge pan or target death. Zoom is preserved with the native camera component's skip-reset option. An edge input changed camera Y by 200 while preserving camera Z; the horizontal direction was then corrected for the game's yaw-180 view.
+
+Final source SHA256: 17EA27DC00C494BE550B86A91366E45CBA0B5ACE471178DD41A5657499653B4A. Mock host checks now cover 28 cases including replay-only input, selected-target updates, click/death cancellation, I toggle, right-edge direction and out-of-viewport rejection. These are regression checks, not native compatibility evidence. The available replay contains buildings but no moving units, so tracking a moving combat unit in real playback remains unverified. Full radar is now enabled; earlier limited-radar notes above describe v0.3.0 only.
+
+Final clean session b5b24ecc4dae4e5c95b4c40611cbde31 used that exact installed source hash without a harness. A right-edge input moved the scene left (camera right), confirming the corrected horizontal direction. Native UI remained at top left and the full minimap remained active; no bridge/viewer errors were logged in this session.

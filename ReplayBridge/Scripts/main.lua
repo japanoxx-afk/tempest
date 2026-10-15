@@ -143,6 +143,43 @@ local worldKey, recordingWorld, startedAt, playSent, prepared
 local viewerInitialized = false
 local viewerActors = {}
 local cameraIndex = 1
+local followTarget
+local inputController
+local function liveWidgets(className, action)
+    for _, widget in ipairs(FindAllOf(className) or {}) do
+        if valid(widget) and widget:GetFullName():find('/Engine/Transient',1,true) then action(widget) end
+    end
+end
+local function configureViewer(pc)
+    pc.bShowMouseCursor = true
+    pc.bEnableClickEvents = true
+    pc.bEnableMouseOverEvents = true
+    pc.bCanSelectEnemy = true
+    pc.bCanClearSelection = true
+    if valid(pc.Pawn) then pc:SetViewTargetWithBlend(pc.Pawn,0.0,0,0.0,false) end
+    local input = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+    if valid(input) and inputController ~= pc:GetFullName() then
+        input:SetInputMode_GameAndUIEx(pc,nil,0,false,false)
+        inputController = pc:GetFullName()
+    end
+    liveWidgets('TedThirdPartySpectatorHud',function(widget)
+        local slot = widget.Box_StatsOverview.Slot
+        slot:SetAnchors({Minimum={X=0,Y=0},Maximum={X=0,Y=0}})
+        slot:SetAlignment({X=0,Y=0})
+        slot:SetPosition({X=16,Y=90})
+    end)
+    liveWidgets('TedMinimapWidget',function(widget)
+        widget.bIgnoreMinimapRequirements = true
+        widget:SetMiniMapStateFlag(0,true) -- Enabled
+        widget:SetMiniMapStateFlag(1,true) -- Eligible
+        widget:SetDrawFogOfWar(false)
+        widget:SetDrawTerrain(true)
+        widget:SetDrawUnits(true)
+        widget:SetDrawStructures(true)
+        widget:SetDrawResources(true)
+        widget:OnMinimapStateChanged(true)
+    end)
+end
 if mode == 'play' then
     local function bind(key, action)
         RegisterKeyBind(key, function()
@@ -151,23 +188,17 @@ if mode == 'play' then
                     local subsystem = FindFirstOf('ReplaySubsystem')
                     local pc = getLocalPlayerController()
                     if not valid(subsystem) or not subsystem:IsPlaying() or not valid(pc) then return end
-                    local pawn = pc:GetSpectatorPawn()
-                    if not valid(pawn) then return end
-                    action(pc,pawn)
+                    if not valid(pc.Pawn) then return end
+                    action(pc,pc.Pawn)
                 end)
                 if not ok then status('viewer_control_error',tostring(err)) end
             end)
         end)
     end
     local function move(pc, pawn, location)
-        -- The game camera reads the possessed pawn even when ViewTarget points
-        -- to the engine's separately spawned spectator pawn. Keep both aligned.
-        for _, camera in ipairs({pc.Pawn,pawn}) do
-            if valid(camera) then
-                camera:K2_SetActorLocation(location,false,{},true)
-                camera.PlayerCameraComponent:InterpolateCameraToLocation(location,0.5,1.0,0.5,0.0,false,false,1.0,false)
-            end
-        end
+        followTarget = nil
+        pawn:K2_SetActorLocation(location,false,{},true)
+        pawn.PlayerCameraComponent:InterpolateCameraToLocation(location,0.5,1.0,0.5,0.0,false,false,1.0,false)
         pc:SetViewTargetWithBlend(pawn,0.0,0,0.0,false)
     end
     bind(Key.F6,function(pc,pawn)
@@ -182,14 +213,64 @@ if mode == 'play' then
         move(pc,pawn,bases[cameraIndex]:K2_GetActorLocation())
         status('viewer_camera', 'Focused recorded player '..bases[cameraIndex]:GetOwningPlayerID())
     end)
-    for _, entry in ipairs({{Key.I,-1600,0},{Key.K,1600,0},{Key.J,0,-1600},{Key.L,0,1600}}) do
-        local key,dx,dy = table.unpack(entry)
-        bind(key,function(pc,pawn)
-            local p=pc.Pawn:K2_GetActorLocation()
-            move(pc,pawn,{X=p.X+dx,Y=p.Y+dy,Z=p.Z})
-        end)
-    end
+    bind(Key.I,function()
+        liveWidgets('TedThirdPartySpectatorHud',function(widget) widget:SingularStatShow_ButtonClick() end)
+    end)
+    bind(Key.C,function(pc)
+        local selected = pc:GetSelectedPawns()
+        local target = selected and selected[1]
+        -- UE4SS returns selected array entries as RemoteUnrealParam wrappers.
+        local unwrapped,value = pcall(function() return target:get() end)
+        if unwrapped then target=value end
+        if valid(target) and target:IsAlive() and target ~= followTarget then
+            followTarget = target
+            status('viewer_tracking',target:GetFullName())
+        else
+            followTarget = nil
+            status('viewer_tracking','Camera tracking off')
+        end
+    end)
     bind(Key.F8,function(pc) command(pc,'demopause') end)
+    local inputPending, inputErrors, mouseWasDown = false, 0, false
+    LoopAsync(33,function()
+        if inputPending then return false end
+        inputPending = true
+        ExecuteInGameThread(function()
+            local ok,err = pcall(function()
+                local subsystem = FindFirstOf('ReplaySubsystem')
+                local pc = getLocalPlayerController()
+                if not valid(subsystem) or not subsystem:IsPlaying() or not valid(pc) or not valid(pc.Pawn) then
+                    followTarget = nil; return
+                end
+                local down = pc:IsInputKeyDown({KeyName=FName('LeftMouseButton')})
+                if down and not mouseWasDown then followTarget = nil end
+                mouseWasDown = down
+                local x,y,sx,sy = {},{},{},{}
+                if not pc:GetMousePosition(x,y) then return end
+                pc:GetViewportSize(sx,sy)
+                local mx,my,width,height = x.LocationX or x.locationX,y.LocationY or y.locationY,sx.SizeX,sy.SizeY
+                if not mx or not my or not width or not height or mx<0 or my<0 or mx>width or my>height then return end
+                local dx,dy = 0,0
+                if mx<24 then dy=200 elseif mx>width-24 then dy=-200 end
+                if my<24 then dx=-200 elseif my>height-24 then dx=200 end
+                local position
+                if dx~=0 or dy~=0 then
+                    followTarget = nil
+                    local p=pc.Pawn:K2_GetActorLocation()
+                    position={X=p.X+dx,Y=p.Y+dy,Z=p.Z}
+                elseif valid(followTarget) then
+                    if followTarget:IsAlive() then position=followTarget:K2_GetActorLocation() else followTarget=nil end
+                end
+                if position then
+                    pc.Pawn:K2_SetActorLocation(position,false,{},true)
+                    pc.Pawn.PlayerCameraComponent:InterpolateCameraToLocation(position,0.04,1.0,-1.0,0.0,false,true,1.0,false)
+                end
+            end)
+            inputPending = false
+            if not ok then inputErrors=inputErrors+1; status('viewer_control_error',tostring(err)) end
+        end)
+        return inputErrors>=3
+    end)
 end
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
@@ -280,8 +361,7 @@ LoopAsync(1000, function()
                             if valid(hudClass) then pc:ClientSetHUD(hudClass) end
                         end
                         pc:ClientGotoState(FName('Spectating'))
-                        local cameraPawn = pc:GetSpectatorPawn()
-                        if not valid(cameraPawn) then cameraPawn = pc.Pawn end
+                        local cameraPawn = pc.Pawn
                         if valid(cameraPawn) then
                             for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
                                 if actor:GetFullName():find('ConstructionYard_C_') and not actor:GetFullName():find('Conformation') then
@@ -295,6 +375,7 @@ LoopAsync(1000, function()
                         status('viewer_initializing', 'Requested recorded game-mode HUD and spectator camera')
                     end
                     if isPlaying then
+                        configureViewer(pc)
                         -- A recorded pause references the original player's state. It can
                         -- otherwise suspend demo delivery forever, including its own unpause.
                         -- Preserve a pause requested by the new local replay spectator.
