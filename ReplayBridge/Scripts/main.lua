@@ -18,6 +18,9 @@ local function write(path, text)
 end
 local function status(state, detail)
     write(home .. 'status.txt', table.concat({session, tostring(os.time()), state, ((detail or ''):gsub('[\r\n]', ' '))}, '\n'))
+    local history = assert(io.open(home .. 'events.log', 'ab'))
+    history:write(table.concat({tostring(os.time()), session, state, ((detail or ''):gsub('[\r\n]', ' '))}, ' ') .. '\n')
+    history:close()
     print('[TempestReplay] ' .. state .. ': ' .. (detail or '') .. '\n')
 end
 local function valid(o) return o ~= nil and o:IsValid() end
@@ -42,22 +45,38 @@ local function diagnostics()
     for _, cls in ipairs({'/Script/Tempest.TedGameState','/Script/Tempest.TedGameModeBase',
         '/Script/Tempest.TedPlayerController','/Script/Tempest.TedPlayerController_Spectator',
         '/Script/Tempest.TedHUD','/Script/Engine.GameInstance','/Script/Engine.World',
-        '/Script/Engine.GameState','/Script/Engine.GameModeBase'}) do
+        '/Script/Engine.GameState','/Script/Engine.GameModeBase',
+        '/Script/Engine.PlayerController','/Script/Engine.KismetSystemLibrary'}) do
         text[#text+1] = describe(cls)
     end
     write(home .. 'reflection.txt', table.concat(text, '\n'))
+    local driverLines = {}
+    local ok, err = pcall(function()
+      local engine = UE.GetEngine()
+      if valid(engine) then
+        local definitions = member(engine, 'NetDriverDefinitions')
+        if definitions then
+            definitions:ForEach(function(_, entry)
+                local value = entry:get()
+                driverLines[#driverLines+1] = value.DefName:ToString() .. ' => ' .. value.DriverClassName:ToString()
+            end)
+        end
+      end
+    end)
+    if not ok then driverLines[#driverLines+1] = 'Diagnostic unavailable: ' .. tostring(err) end
+    write(home .. 'net-drivers.txt', table.concat(driverLines, '\n'))
 end
 local function command(pc, cmd)
-    -- Unlike Kismet's void wrapper, ConsoleCommand returns engine diagnostics.
-    local response = pc:ConsoleCommand(cmd, false)
-    local output = response and tostring(response) or ''
-    if response and type(response) ~= 'string' then
-        local ok, text = pcall(function() return response:ToString() end)
-        if ok then output = text end
-    end
+    -- ConsoleCommand is native/non-reflected in this shipping build. Never call
+    -- pc:ConsoleCommand from Lua: UE4SS returns an uncallable TrivialObject.
+    local lib = StaticFindObject('/Script/Engine.Default__KismetSystemLibrary')
+    local fn = StaticFindObject('/Script/Engine.KismetSystemLibrary:ExecuteConsoleCommand')
+    assert(valid(lib) and valid(fn), 'Reflected ExecuteConsoleCommand is unavailable; recording unsupported by this bridge')
     local f = assert(io.open(home .. 'commands.log', 'ab'))
-    f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' ' .. cmd .. '\n' .. output .. '\n'); f:close()
-    return output
+    f:write(os.date('%Y-%m-%d %H:%M:%S') .. ' REQUEST ' .. cmd .. '\n'); f:close()
+    lib:CallFunction(fn, pc, cmd, pc)
+    -- This UFunction returns void: dispatch has no success acknowledgement.
+    return 'Kismet dispatch returned; engine success unknown'
 end
 local spectatorClass
 local function setSpectator(gm)

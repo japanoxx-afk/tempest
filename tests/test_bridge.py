@@ -15,16 +15,18 @@ world = {GameState=gs, IsValid=function() return true end,
 worldName='World_A'
 pc = {IsValid=function() return true end, GetWorld=function() return world end,
  HasMatchStarted=function() return began end, HasMatchEnded=function() return ended end,
- ConsoleCommand=function(self, cmd, writeToLog) table.insert(commands,cmd); return commandOutput or '' end}
+ ConsoleCommand={type='TrivialObject'}}
+consoleFunction={IsValid=function() return true end}
 lib = {IsValid=function() return true end,
- ExecuteConsoleCommand=function(self, context, cmd) table.insert(commands,cmd) end}
+ CallFunction=function(self, fn, context, cmd, player) table.insert(commands,cmd) end}
 os.getenv=function() return testRoot end
 os.time=function() return now end
 os.date=function() return '20261016_120000' end
 print=function() end
-package.preload.UEHelpers=function() return {GetPlayerController=function() return pc end} end
+package.preload.UEHelpers=function() return {GetPlayerController=function() return pc end, GetEngine=function() return invalid end} end
 StaticFindObject=function(path)
  if path=='/Script/Engine.Default__KismetSystemLibrary' then return lib end
+ if path=='/Script/Engine.KismetSystemLibrary:ExecuteConsoleCommand' then return consoleFunction end
  return invalid
 end
 LoadAsset=function() return {IsValid=function() return true end} end
@@ -125,12 +127,11 @@ class BridgeTests(unittest.TestCase):
     def test_no_driver_is_reported_as_failure(self):
         self.start()
         self.lua.globals().began = True
-        self.lua.globals().commandOutput = 'DemoNetDriver definition missing'
         self.tick()
         self.lua.globals().now = 1010
         self.tick()
         self.assertIn('record_failed', (self.data / 'status.txt').read_text())
-        self.assertIn('definition missing', (self.data / 'commands.log').read_text())
+        self.assertIn('REQUEST demorec', (self.data / 'commands.log').read_text())
         self.assertEqual(len(self.commands()), 1)
 
     def test_driver_activation_is_reported_separately(self):
@@ -140,6 +141,21 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute('world.DemoNetDriver={IsValid=function() return true end}')
         self.tick()
         self.assertIn('record_driver_active', (self.data / 'status.txt').read_text())
+
+    def test_non_reflected_console_command_is_never_called(self):
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.assertEqual(len(self.commands()), 1)
+        self.assertNotIn('bridge_error', (self.data / 'status.txt').read_text())
+
+    def test_missing_kismet_function_fails_before_dispatch(self):
+        self.lua.globals().consoleFunction = self.lua.globals().invalid
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.assertEqual(self.commands(), [])
+        self.assertIn('unavailable', (self.data / 'status.txt').read_text())
 
 
 if __name__ == '__main__':
