@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 try {
  if ($WaitPid) { Wait-Process -Id $WaitPid -Timeout 30 -ErrorAction SilentlyContinue }
- $files = @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','README.md','ReplayBridge')
+ $files = @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','README.md','ReplayBridge','docs')
  $backup = Join-Path (Split-Path $Source -Parent) 'backup'
  New-Item $backup -ItemType Directory -Force | Out-Null
  foreach ($file in $files) { if (Test-Path (Join-Path $Target $file)) { Copy-Item (Join-Path $Target $file) $backup -Recurse } }

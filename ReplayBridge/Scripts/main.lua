@@ -28,6 +28,20 @@ local function member(o, key)
     local ok, value = pcall(function() return o[key] end)
     if ok then return value end
 end
+local function getLocalPlayerController()
+    -- UEHelpers.GetPlayerController selects IsPlayerController(), which is also
+    -- true for Tempest's BP_BotPlayerController_Skirmish_C. Native console Exec
+    -- needs the ULocalPlayer attached to the human controller, never an AI.
+    for _, controller in ipairs(FindAllOf('PlayerController') or {}) do
+        if valid(controller) then
+            local player = member(controller, 'Player')
+            if valid(player) and player:IsA('/Script/Engine.LocalPlayer') then
+                return controller
+            end
+        end
+    end
+    return nil
+end
 local function describe(classPath)
     local cls = StaticFindObject(classPath)
     if not valid(cls) then return classPath .. ': NOT LOADED\n' end
@@ -125,7 +139,58 @@ local function prepareSpectator()
     end)
 end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
-local worldKey, recordingWorld, startedAt, playSent, prepared, hudActivated
+local worldKey, recordingWorld, startedAt, playSent, prepared
+local viewerInitialized = false
+local viewerActors = {}
+local cameraIndex = 1
+if mode == 'play' then
+    local function bind(key, action)
+        RegisterKeyBind(key, function()
+            ExecuteInGameThread(function()
+                local ok, err = pcall(function()
+                    local subsystem = FindFirstOf('ReplaySubsystem')
+                    local pc = getLocalPlayerController()
+                    if not valid(subsystem) or not subsystem:IsPlaying() or not valid(pc) then return end
+                    local pawn = pc:GetSpectatorPawn()
+                    if not valid(pawn) then return end
+                    action(pc,pawn)
+                end)
+                if not ok then status('viewer_control_error',tostring(err)) end
+            end)
+        end)
+    end
+    local function move(pc, pawn, location)
+        -- The game camera reads the possessed pawn even when ViewTarget points
+        -- to the engine's separately spawned spectator pawn. Keep both aligned.
+        for _, camera in ipairs({pc.Pawn,pawn}) do
+            if valid(camera) then
+                camera:K2_SetActorLocation(location,false,{},true)
+                camera.PlayerCameraComponent:InterpolateCameraToLocation(location,0.5,1.0,0.5,0.0,false,false,1.0,false)
+            end
+        end
+        pc:SetViewTargetWithBlend(pawn,0.0,0,0.0,false)
+    end
+    bind(Key.F6,function(pc,pawn)
+        local bases = {}
+        for _, actor in ipairs(FindAllOf('TedStructureBase') or {}) do
+            local name = actor:GetFullName()
+            if name:find('ConstructionYard_C_') and not name:find('Conformation') and not name:find('Ghost') and actor:IsAlive() then bases[#bases+1]=actor end
+        end
+        table.sort(bases,function(a,b) return a:GetOwningPlayerID()<b:GetOwningPlayerID() end)
+        if #bases == 0 then return end
+        cameraIndex = cameraIndex % #bases + 1
+        move(pc,pawn,bases[cameraIndex]:K2_GetActorLocation())
+        status('viewer_camera', 'Focused recorded player '..bases[cameraIndex]:GetOwningPlayerID())
+    end)
+    for _, entry in ipairs({{Key.I,-1600,0},{Key.K,1600,0},{Key.J,0,-1600},{Key.L,0,1600}}) do
+        local key,dx,dy = table.unpack(entry)
+        bind(key,function(pc,pawn)
+            local p=pc.Pawn:K2_GetActorLocation()
+            move(pc,pawn,{X=p.X+dx,Y=p.Y+dy,Z=p.Z})
+        end)
+    end
+    bind(Key.F8,function(pc) command(pc,'demopause') end)
+end
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local pending = false
@@ -135,8 +200,18 @@ LoopAsync(1000, function()
     pending = true
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
-            local pc = UE.GetPlayerController()
+            local pc = getLocalPlayerController()
             if not valid(pc) then return end
+            local control = read(home .. 'control.txt')
+            if control then
+                os.remove(home .. 'control.txt')
+                control = control:gsub('\r\n','\n')
+                if control == session .. '\nstop\n' then
+                    command(pc,'demostop')
+                    status('stop_requested','Requested replay/recording stop')
+                    return
+                end
+            end
             local world = pc:GetWorld()
             if not valid(world) then return end
             local key = world:GetFullName()
@@ -155,6 +230,38 @@ LoopAsync(1000, function()
             if mode == 'probe' then status('probe_ready', key); return end
             local gs = world.GameState
             if mode == 'play' then
+                local snapshot = {'session=' .. session, 'world=' .. key, 'controller=' .. pc:GetFullName()}
+                local function inspect(label, getter)
+                    local ok, value = pcall(getter)
+                    snapshot[#snapshot+1] = label .. '=' .. (ok and tostring(value) or ('ERROR ' .. tostring(value)))
+                end
+                inspect('controller_class', function() return pc:GetClass():GetFullName() end)
+                inspect('game_state', function() return valid(gs) and gs:GetFullName() or 'none' end)
+                inspect('driver', function() local d=member(world,'DemoNetDriver');return valid(d) and d:GetFullName() or 'none' end)
+                inspect('hud', function() local h=pc:GetHUD();return valid(h) and h:GetFullName() or 'none' end)
+                inspect('hud_spectator', function() local h=pc:GetHUD();return valid(h) and h:IsSpectatorModeActive() or false end)
+                inspect('pawn', function() local p=pc.Pawn;return valid(p) and p:GetFullName() or 'none' end)
+                inspect('spectator_pawn', function() local p=pc:GetSpectatorPawn();return valid(p) and p:GetFullName() or 'none' end)
+                inspect('player_state', function() local p=pc.PlayerState;return valid(p) and p:GetFullName() or 'none' end)
+                inspect('game_mode_class', function() return gs.GameModeClass:GetFullName() end)
+                inspect('configured_hud_class', function() return gs.GameModeClass:GetCDO().HUDClass:GetFullName() end)
+                inspect('configured_spectator_class', function() return gs.SpectatorClass:GetFullName() end)
+                inspect('replay_playing', function() return FindFirstOf('ReplaySubsystem'):IsPlaying() end)
+                inspect('replay_time', function() return FindFirstOf('ReplaySubsystem'):GetReplayCurrentTime() end)
+                inspect('pauser', function() local p=world:K2_GetWorldSettings().PauserPlayerState;return valid(p) and p:GetFullName() or 'none' end)
+                inspect('view_target', function() return pc:GetViewTarget():GetFullName() end)
+                inspect('camera_location', function() local v=pc.PlayerCameraManager:GetCameraLocation();return v.X..','..v.Y..','..v.Z end)
+                inspect('only_spectator', function() return pc:IsOnlyASpectator() end)
+                inspect('spectator_mode', function() return pc:GetHUD():GetActiveSpectatorMode() end)
+                inspect('loaded_level_count', function() return #world.Levels end)
+                local streamOk,streamErr=pcall(function()
+                    world.StreamingLevels:ForEach(function(_,entry)
+                        local level=entry:get()
+                        snapshot[#snapshot+1]='stream='..level:GetFName():ToString()..' loaded='..tostring(level:IsLevelLoaded())..' visible='..tostring(level:IsLevelVisible())
+                    end)
+                end)
+                if not streamOk then snapshot[#snapshot+1]='stream_error='..tostring(streamErr) end
+                write(home .. 'playback.txt', table.concat(snapshot,'\n'))
                 if not prepared then prepareSpectator(); prepared = true end
                 if not playSent and os.time() - startedAt >= 3 then
                     assert(replay ~= '', 'Replay name missing')
@@ -164,16 +271,68 @@ LoopAsync(1000, function()
                     status('play_requested', replay .. '; not a playback success acknowledgement')
                 elseif playSent and valid(gs) and gs:IsA('/Script/Tempest.TedGameState') then
                     local driver = member(world, 'DemoNetDriver')
-                    if valid(driver) and not hudActivated then
-                        local hud = pc:GetHUD()
-                        local fn = StaticFindObject('/Script/Tempest.TedHUD:ActivateMatchSpectatorUI')
-                        if valid(hud) and valid(fn) then
-                            local count = 0
-                            fn:ForEachProperty(function() count = count + 1 end)
-                            assert(count == 0, 'Spectator HUD signature needs an adapter; see reflection.txt')
-                            hud:ActivateMatchSpectatorUI()
-                            hudActivated = true
-                            status('spectator_ui_requested', 'Verify camera, full map, statistics and timeline in game')
+                    local replaySystem = FindFirstOf('ReplaySubsystem')
+                    local isPlaying = valid(driver) and valid(replaySystem) and replaySystem:IsPlaying()
+                    if isPlaying and not viewerInitialized then
+                        local modeClass = gs.GameModeClass
+                        if valid(modeClass) then
+                            local hudClass = modeClass:GetCDO().HUDClass
+                            if valid(hudClass) then pc:ClientSetHUD(hudClass) end
+                        end
+                        pc:ClientGotoState(FName('Spectating'))
+                        local cameraPawn = pc:GetSpectatorPawn()
+                        if not valid(cameraPawn) then cameraPawn = pc.Pawn end
+                        if valid(cameraPawn) then
+                            for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
+                                if actor:GetFullName():find('ConstructionYard_C_') and not actor:GetFullName():find('Conformation') then
+                                    cameraPawn.PlayerCameraComponent:InterpolateCameraToLocation(actor:K2_GetActorLocation(),0.5,1.0,0.5,0.0,false,false,1.0,false)
+                                    break
+                                end
+                            end
+                            pc:SetViewTargetWithBlend(cameraPawn,0.0,0,0.0,false)
+                        end
+                        viewerInitialized = true
+                        status('viewer_initializing', 'Requested recorded game-mode HUD and spectator camera')
+                    end
+                    if isPlaying then
+                        -- A recorded pause references the original player's state. It can
+                        -- otherwise suspend demo delivery forever, including its own unpause.
+                        -- Preserve a pause requested by the new local replay spectator.
+                        local settings = world:K2_GetWorldSettings()
+                        local pauser = settings.PauserPlayerState
+                        if valid(pauser) and valid(pc.PlayerState) and pauser:GetFullName() ~= pc.PlayerState:GetFullName() then
+                            settings.PauserPlayerState = nil
+                        end
+                        local fog = FindFirstOf('FogOfWarActor')
+                        if valid(fog) then fog:K2_SetTemporarilyUnfog(pc,true) end
+                        for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
+                            local name = actor:GetFullName()
+                            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') and actor:IsAlive() and not actor:IsInContainer() then
+                                actor:K2_SetDefaultVisibility(true,true)
+                                actor:K2_OnVisibilityChanged(true)
+                                if not viewerActors[name] then
+                                    -- Replay-created structures otherwise retain their concealed,
+                                    -- underground construction pose. Use the game's visibility init.
+                                    if actor:IsA('/Script/Tempest.TedStructureBase') then
+                                        actor:SetInitiallyVisible()
+                                        actor:ReceiveHandleConstructionVisuals(actor:IsConstructing())
+                                    end
+                                    viewerActors[name] = true
+                                end
+                                actor:SetActorHiddenInGame(true)
+                                actor:SetActorHiddenInGame(false)
+                                actor.bHidden = false
+                                local mesh = actor.MeshComp
+                                if valid(mesh) then
+                                    mesh:SetVisibility(false,false)
+                                    mesh:SetHiddenInGame(false,false); mesh:SetVisibility(true,false)
+                                    mesh:SetComponentTickEnabled(true)
+                                    if mesh:IsA('/Script/Engine.SkeletalMeshComponent') then
+                                        mesh.VisibilityBasedAnimTickOption = 0
+                                        mesh.bPauseAnims = false
+                                    end
+                                end
+                            end
                         end
                     end
                 end

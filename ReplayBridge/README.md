@@ -1,7 +1,11 @@
 # Tempest Replay Bridge (experimental)
 
-UE4SS Lua bridge for installed Tempest Rising UE 5.4.3. This is an integration prototype, not a verified replay implementation. It requires a clean game restart with UE4SS loaded. Do not infer replay success from a console-command dispatch or from the presence of engine symbols.
+UE4SS Lua integration for Tempest Rising UE 5.4.3. A clean restart with a fresh launcher request is required. Without a request, the bridge stays idle. The probe is read-only. The launcher updates installed Lua on the next clean bridge launch.
 
-The launcher creates a short-lived request before starting Steam. Without a fresh request this mod stays idle. A recording request waits for a Tempest game state and `HasMatchStarted()`, dispatches `demorec` once per world, and writes an acknowledgement. File growth is verified separately by the launcher. Playback requests configure the game's existing spectator controller class and attempt to activate its spectator HUD; these steps require in-game validation.
+Recording selects a controller attached to an Engine.LocalPlayer, waits for HasMatchStarted, registers the missing DemoNetDriver in the current engine and requests demorec once per match world. Driver activation and actual file creation are separate checks. The AI controller accepted by UEHelpers.GetPlayerController was the confirmed cause of earlier silent recording failures.
 
-`probe` mode only reports reflected classes and members, without recording or modifying spectator properties. Runtime status and diagnostics stay under `%LOCALAPPDATA%\TempestReplayLauncher\bridge`. Never commit local runtime dumps or game assets.
+Playback configures the game's TedSpectatorController asset, restores the recorded game-mode HUD and spectator state, and focuses its native camera component on a recorded construction yard. Replay-only visibility initialization restores terrain, live actors, structure construction visuals and skeletal animation updates. These operations require both play mode and ReplaySubsystem.IsPlaying; they do not modify the visibility of a live recording session. Map design placeholders, ghosts, dead and contained pawns are excluded.
+
+A native replay of an offline skirmish on the installed Steam build 25752338 was recorded, finalized and played in a new process on 2026-10-16. Native spectator UI, both players' statistics and construction visuals were observed. Online games, long battles, all maps/factions, full radar and seeking are not validated. See docs/NATIVE-VALIDATION.md in the source checkout. Never infer full replay correctness from command dispatch or mocked tests alone.
+
+Runtime diagnostics remain under %LOCALAPPDATA%\TempestReplayLauncher\bridge. Do not commit dumps, account logs, game assets or replay contents. Development harnesses are not part of this bridge.

@@ -11,11 +11,18 @@ invalid = {IsValid=function() return false end}
 gs = {IsValid=function() return true end, IsA=function() return true end,
  HasMatchStarted=function() return began end, HasMatchEnded=function() return ended end}
 world = {GameState=gs, IsValid=function() return true end,
+ K2_GetWorldSettings=function() return worldSettings end,
  GetFullName=function() return worldName end}
+worldSettings={PauserPlayerState=invalid}
 worldName='World_A'
 pc = {IsValid=function() return true end, GetWorld=function() return world end,
+ GetFullName=function() return 'HumanPlayerController' end,
  HasMatchStarted=function() return began end, HasMatchEnded=function() return ended end,
  ConsoleCommand={type='TrivialObject'}}
+pc.Player={IsValid=function() return true end,IsA=function(self,cls) return cls=='/Script/Engine.LocalPlayer' end}
+bot={IsValid=function() return true end,Player=invalid}
+controllers={bot,pc}
+FindAllOf=function() return controllers end
 consoleFunction={IsValid=function() return true end}
 lib = {IsValid=function() return true end,
  CallFunction=function() error('Unbound UFunction context') end,
@@ -40,6 +47,8 @@ LoadAsset=function() return {IsValid=function() return true end} end
 RegisterInitGameStatePostHook=function(callback) initHook=callback end
 LoopAsync=function(interval, callback) loop=callback end
 ExecuteInGameThread=function(callback) callback() end
+Key={F6=117,F8=119,I=73,J=74,K=75,L=76}; keybinds={}
+RegisterKeyBind=function(key,callback) keybinds[key]=callback end
 '''
 
 
@@ -198,6 +207,87 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("worldName='MainMenu'; began=false; gs.IsA=function() return false end")
         self.tick()
         self.assertIn('record_failed', (self.data / 'status.txt').read_text())
+
+    def test_bot_before_human_is_never_used_as_command_context(self):
+        self.lua.execute("lib.ExecuteConsoleCommand=function(self,context,cmd,player) assert(context==pc and player==pc,'AI selected');table.insert(commands,cmd) end")
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.assertEqual(len(self.commands()),1)
+
+    def test_no_human_controller_sends_no_commands(self):
+        self.lua.execute('controllers={bot}')
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.assertEqual(self.commands(),[])
+
+    def setup_viewer(self):
+        self.lua.execute('''
+        replayPlaying=false; hiddenCalls=0; viewerStarts=0
+        actor={IsValid=function() return true end,GetFullName=function() return 'RealPawn' end,
+          IsAlive=function() return true end,IsInContainer=function() return false end,
+          IsA=function() return false end,MeshComp=invalid,
+          K2_SetDefaultVisibility=function() end,K2_OnVisibilityChanged=function() end,
+          SetActorHiddenInGame=function() hiddenCalls=hiddenCalls+1 end}
+        placeholder=setmetatable({GetFullName=function() return 'ConformationPawn' end},{__index=actor})
+        dead=setmetatable({GetFullName=function() return 'DeadPawn' end,IsAlive=function() return false end},{__index=actor})
+        FindAllOf=function(cls) if cls=='PlayerController' then return controllers else return {actor,placeholder,dead} end end
+        replaySystem={IsValid=function() return true end,IsPlaying=function() return replayPlaying end}
+        pc.PlayerState={IsValid=function() return true end,GetFullName=function() return 'ReplaySpectatorState' end}
+        FindFirstOf=function(cls) if cls=='ReplaySubsystem' then return replaySystem else return invalid end end
+        pc.ClientGotoState=function() viewerStarts=viewerStarts+1 end
+        pc.GetSpectatorPawn=function() return invalid end
+        world.DemoNetDriver={IsValid=function() return true end}
+        ''')
+
+    def test_viewer_requires_actual_replay_playback(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.tick()
+        self.lua.globals().now = 1004
+        self.tick()
+        self.tick()
+        self.assertEqual(self.lua.globals().viewerStarts, 0)
+        self.assertEqual(self.lua.globals().hiddenCalls, 0)
+        self.lua.globals().replayPlaying = True
+        self.tick()
+        self.assertEqual(self.lua.globals().viewerStarts, 1)
+        self.assertEqual(self.lua.globals().hiddenCalls, 2)  # real pawn only
+        self.tick()
+        self.assertEqual(self.lua.globals().viewerStarts, 1)
+
+    def test_record_mode_never_changes_pawn_visibility(self):
+        self.setup_viewer()
+        self.lua.globals().replayPlaying = True
+        self.start()
+        self.lua.globals().began = True
+        self.tick()
+        self.assertEqual(self.lua.globals().hiddenCalls, 0)
+        self.assertEqual(self.lua.globals().viewerStarts, 0)
+
+    def test_recorded_pause_is_cleared_but_local_replay_pause_is_preserved(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.tick()
+        self.lua.globals().now = 1004
+        self.tick()
+        self.lua.execute("replayPlaying=true;worldSettings.PauserPlayerState={IsValid=function() return true end,GetFullName=function() return 'OriginalPlayerState' end}")
+        self.tick()
+        self.assertIsNone(self.lua.globals().worldSettings.PauserPlayerState)
+        self.lua.execute('worldSettings.PauserPlayerState=pc.PlayerState')
+        self.tick()
+        self.assertEqual(self.lua.eval('worldSettings.PauserPlayerState:GetFullName()'), 'ReplaySpectatorState')
+
+    def test_record_mode_does_not_register_viewer_hotkeys(self):
+        self.start()
+        self.assertEqual(len(list(self.lua.globals().keybinds.values())), 0)
+
+    def test_hotkeys_do_nothing_before_actual_playback(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.lua.execute('keybinds[Key.F8]()')
+        self.assertEqual(self.commands(), [])
 
 
 if __name__ == '__main__':

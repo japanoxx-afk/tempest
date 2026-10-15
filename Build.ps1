@@ -2,7 +2,7 @@
 $version=(Get-Content (Join-Path $PSScriptRoot 'version.json') -Raw | ConvertFrom-Json).version
 $stage=Join-Path $PSScriptRoot ('dist\package-'+[guid]::NewGuid().ToString('N'))
 New-Item $stage -ItemType Directory -Force | Out-Null
-$files=@('Launcher.ps1','Start.cmd','Update.ps1','Bridge.ps1','ReplayBridge','version.json','README.md')
+$files=@('Launcher.ps1','Start.cmd','Update.ps1','Bridge.ps1','ReplayBridge','version.json','README.md','docs')
 foreach ($file in $files) { Copy-Item (Join-Path $PSScriptRoot $file) $stage -Recurse }
 # v0.1.0's updater copies a fixed list of five files. Embed bridge resources in
 # the entry script so a direct update from that release can still start.
