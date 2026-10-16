@@ -28,6 +28,19 @@ class MovementTests(unittest.TestCase):
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
 
+    def test_building_states_change_at_recorded_time_without_interpolation(self):
+        self.lua.execute("""
+        w=M.writer(path,'Test');u=unit(0,0);u.building=1;w:frame(0,{u})
+        u.building=2;w:frame(1,{u});u.building=3;w:frame(2,{u});w:close()
+        r=M.reader(path,'Test');assert(r:at(0.9)['Tank_C:1:2076'].building==1)
+        assert(r:at(1)['Tank_C:1:2076'].building==2)
+        assert(r:at(2)['Tank_C:1:2076'].building==3)
+        """)
+
+    def test_rejects_invalid_building_state(self):
+        self.path.write_text('TEMPEST_MOVEMENT\t2\tTest\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t0\t0\t0\t0\t0\nB\t1\t4\nE\n')
+        with self.assertRaises(LuaError): self.lua.execute("r=M.reader(path,'Test');r:at(0)")
+
     def test_replay_duration_reads_custom_version_container(self):
         self.path.write_bytes(struct.pack('<III',0x1ca2e27f,7,1)+bytes(16)+struct.pack('<II',7,217047))
         self.assertAlmostEqual(self.lua.globals().M.duration(str(self.path)),217.047)

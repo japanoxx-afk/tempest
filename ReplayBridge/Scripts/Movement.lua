@@ -37,7 +37,7 @@ end
 function M.writer(path,name)
     assert(token(name),'Invalid replay name')
     local f=assert(io.open(path,'wb'))
-    assert(f:write('TEMPEST_MOVEMENT\t1\t'..name..'\n'));assert(f:flush())
+    assert(f:write('TEMPEST_MOVEMENT\t2\t'..name..'\n'));assert(f:flush())
     local w={file=f,ids={},count=0,frames=0,last=-1}
     function w:frame(time,units)
         assert(finite(time) and time>=0 and time>=self.last,'Movement clock went backwards')
@@ -56,6 +56,10 @@ function M.writer(path,name)
             local p=u.position;local r=u.rotation
             for _,v in ipairs({p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll}) do assert(finite(v),'Invalid movement transform') end
             rows[#rows+1]=string.format('P\t%d\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\t%.3f\n',id,p.X,p.Y,p.Z,r.Pitch,r.Yaw,r.Roll)
+            if u.building then
+                assert(u.building==1 or u.building==2 or u.building==3,'Invalid building state')
+                rows[#rows+1]=string.format('B\t%d\t%d\n',id,u.building)
+            end
         end
         assert(self.file:write(table.concat(rows)));assert(self.file:flush())
         self.last=time;self.frames=self.frames+1
@@ -69,7 +73,9 @@ function M.writer(path,name)
 end
 function M.reader(path,name)
     local f=io.open(path,'rb');if not f then return nil end
-    if (f:read('*l') or ''):gsub('\r$','')~='TEMPEST_MOVEMENT\t1\t'..name then f:close();error('Movement companion header/name mismatch') end
+    local header=(f:read('*l') or ''):gsub('\r$','')
+    local version=header=='TEMPEST_MOVEMENT\t1\t'..name and 1 or (header=='TEMPEST_MOVEMENT\t2\t'..name and 2)
+    if not version then f:close();error('Movement companion header/name mismatch') end
     local r={file=f,definitions={},identities={},tracks={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
     function r:nextFrame()
@@ -94,6 +100,11 @@ function M.reader(path,name)
                 frame.count=frame.count+1;assert(frame.count<=20000,'Too many movement samples')
                 frame.units[key]={position={X=v[3],Y=v[4],Z=v[5]},rotation={Pitch=v[6],Yaw=v[7],Roll=v[8]}}
                 if not self.tracks[key].position then self.tracks[key].position=frame.units[key].position;self.tracks[key].time=frame.time end
+            elseif a[1]=='B' then
+                local id,state=tonumber(a[2]),tonumber(a[3]);local key=id and self.definitions[id]
+                local unit=frame and key and frame.units[key]
+                assert(version==2 and #a==3 and unit and not unit.building and (state==1 or state==2 or state==3),'Invalid building state record')
+                unit.building=state
             elseif a[1]=='E' and #a==1 then self:close();return frame
             else error('Invalid movement record') end
         end
@@ -115,9 +126,9 @@ function M.reader(path,name)
             if v then
                 local p,q=u.position,v.position;local x,y=u.rotation,v.rotation
                 result[key]={position={X=blend(p.X,q.X,alpha),Y=blend(p.Y,q.Y,alpha),Z=blend(p.Z,q.Z,alpha)},
-                    velocity=M.velocity(p,q,b.time-a.time),
+                    building=u.building,velocity=M.velocity(p,q,b.time-a.time),
                     rotation={Pitch=angle(x.Pitch,y.Pitch,alpha),Yaw=angle(x.Yaw,y.Yaw,alpha),Roll=angle(x.Roll,y.Roll,alpha)}}
-            else result[key]={position=u.position,rotation=u.rotation,velocity={X=0,Y=0,Z=0}} end
+            else result[key]={position=u.position,rotation=u.rotation,building=u.building,velocity={X=0,Y=0,Z=0}} end
         end
         return result
     end

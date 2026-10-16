@@ -86,3 +86,4 @@ if ((Get-Item (Join-Path $importTarget 'Legacy.replay')).Length -ne 2) {throw 'L
  if($script:launches[-1].Args){throw 'Replay arguments leaked into next recording'}
  'PASS: replay-only NoIntro, single-use session and unchanged recording launch'
 }
+& (Join-Path $PSScriptRoot 'test_exit.ps1')

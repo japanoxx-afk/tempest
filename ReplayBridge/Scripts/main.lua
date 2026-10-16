@@ -154,6 +154,7 @@ end
 local worldKey, recordingWorld, startedAt, playSent, prepared
 local movementIO={}
 function movementIO:isDead(actor)
+    if self.visualDeaths and self.visualDeaths[actor:GetFullName()] then return true end
     local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
     return ok and dead==true
 end
@@ -227,24 +228,71 @@ end
 function movementIO:record(subsystem,name,actors)
     if not self.codec or self.failed then return end
     if self.name~=name then
-        self:close();self.name=name;self.frames=0;self.units=0
+        self:close();self.name=name;self.frames=0;self.units=0;self.recordedBuildings={}
         local path=os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..name..'.movement'
         self.writer=self.codec.writer(path,name)
         status('movement_recording','Local received unit movement companion: '..path)
     end
     local units,seen={},{}
     for _,actor in ipairs(actors) do
-        if valid(actor) and actor:IsAlive() and not actor:IsInContainer() then
+        local structure=valid(actor) and actor:IsA('/Script/Tempest.TedStructureBase') and not actor:IsA('/Script/Tempest.TedConformationBase')
+        local constructing=structure and actor:IsConstructing()
+        if valid(actor) and not self:isDead(actor) and (actor:IsAlive() or constructing) and not actor:IsInContainer() then
             local key,class,owner,entity=self:identity(actor)
             if key then
                 assert(not seen[key],'Duplicate ECS identity; refusing ambiguous movement recording');seen[key]=true
-                units[#units+1]={class=class,owner=owner,entity=entity,position=actor:K2_GetActorLocation(),rotation=actor:K2_GetActorRotation()}
+                local p=actor:K2_GetActorLocation();local r=actor:K2_GetActorRotation()
+                -- Cached building poses must not retain native struct wrappers.
+                local unit={class=class,owner=owner,entity=entity,
+                    position={X=p.X,Y=p.Y,Z=p.Z},rotation={Pitch=r.Pitch,Yaw=r.Yaw,Roll=r.Roll}}
+                if structure then
+                    unit.building=constructing and 1 or 2
+                    self.recordedBuildings[actor:GetFullName()]=unit
+                end
+                units[#units+1]=unit
             end
+        elseif valid(actor) and self.recordedBuildings[actor:GetFullName()] and self:isDead(actor) then
+            -- Keep an explicit death sample. Disappearance/fog is not death.
+            local unit=self.recordedBuildings[actor:GetFullName()]
+            local key=self.codec.key(unit.class,unit.owner,unit.entity)
+            if not seen[key] then unit.building=3;units[#units+1]=unit;seen[key]=true end
         end
     end
     self.writer:frame(subsystem:GetReplayCurrentTime(),units)
     self.frames=self.writer.frames;self.units=#units
     if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
+end
+function movementIO:buildingVisuals(actor,state)
+    if not actor:IsA('/Script/Tempest.TedStructureBase') or actor:IsA('/Script/Tempest.TedConformationBase') then return end
+    self.buildingStates=self.buildingStates or {};self.visualDeaths=self.visualDeaths or {}
+    local name=actor:GetFullName()
+    if state==3 then
+        if not self:isDead(actor) then
+            actor:SetActorTickEnabled(true)
+            actor:ReceiveOnDeath() -- cosmetic event only; never damage/RPC/death simulation
+            self.visualDeaths[name]=true
+        end
+        self.buildingStates[name]=3
+    elseif not self:isDead(actor) then
+        local value=state or (actor:IsConstructing() and 1 or 2)
+        if self.buildingStates[name]~=value then
+            actor:SetActorTickEnabled(true)
+            actor:ReceiveHandleConstructionVisuals(value==1)
+            if self.buildingStates[name]==1 and value==2 then
+                local mesh=actor.MeshComp;local montage=actor.SpawnAnimation
+                if valid(mesh) and valid(montage) then
+                    local anim=mesh:GetAnimInstance()
+                    if valid(anim) and not anim:Montage_IsPlaying(montage) then
+                        -- Only the recorded completion transition; no replay-start
+                        -- animation for every pre-existing building or speed override.
+                        mesh:SetComponentTickEnabled(true)
+                        anim:Montage_Play(montage,1,0,0,false)
+                    end
+                end
+            end
+            self.buildingStates[name]=value
+        end
+    end
 end
 function movementIO:play(subsystem)
     self.animationFrames={}
@@ -282,6 +330,7 @@ function movementIO:play(subsystem)
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
+        if actor then self:buildingVisuals(actor,sample.building) end
         if actor and not self:isDead(actor) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if not self.visible or not self.visible[name] then
@@ -405,7 +454,46 @@ local function stopViewer(reason)
     movementIO:close()
     status('viewer_stopped',reason)
 end
+local function exitViewer(closeApplication)
+    if mode~='play' or not viewerInitialized or viewerStopped then return end
+    local pc=getLocalPlayerController()
+    local subsystem=FindFirstOf('ReplaySubsystem')
+    if not valid(pc) or not valid(subsystem) or not subsystem:IsPlaying() then return end
+    pc:GetWorld():K2_GetWorldSettings().PauserPlayerState=nil
+    stopViewer('Replay exit requested; callbacks released')
+    -- Use local engine exit/travel without depending on live-match surrender
+    -- acknowledgement, including when the replay is paused at EOF.
+    command(pc,closeApplication and 'exit' or 'open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
+end
 if mode == 'play' then
+    RegisterULocalPlayerExecPreHook(function(context,world,cmd)
+        local exitCommand=cmd:lower():match('^%s*(.-)%s*$')
+        if exitCommand=='quit' or exitCommand=='exit' then
+            stopViewer('Local game exit command; viewer callbacks released')
+            write(home..'shutdown.txt',session)
+        end
+        -- Observe the confirmed engine command without suppressing native exit.
+        return nil,true
+    end)
+    -- A spectator has no live server to acknowledge the game's normal shutdown
+    -- request. Clear our paused end state and use the engine's local quit path.
+    RegisterHook('/Script/Tempest.TedPlayerController:ExitCurrentGame',function(context,shutdown)
+        if not viewerInitialized or viewerStopped then return end
+        local pc=context:get();local localPC=getLocalPlayerController()
+        if not valid(pc) or not valid(localPC) or pc:GetFullName()~=localPC:GetFullName() then return end
+        exitViewer(shutdown:get())
+    end)
+    -- Native menu handling does not call ExitCurrentGame through ProcessEvent.
+    -- Recognize only the two exit slots on a replay's own pause menu.
+    RegisterHook('/Script/Tempest.TedPauseMenuScreen:OnPauseMenuButtonSlotAction',function(context,panel,slot,action)
+        if not viewerInitialized or viewerStopped or action:get()~=0 then return end
+        local menu=context:get();local selected=slot:get()
+        if not valid(menu) or not valid(selected) then return end
+        local name=selected:GetFullName()
+        local quit=valid(menu.Slot_Quit) and name==menu.Slot_Quit:GetFullName()
+        local main=valid(menu.Slot_MainMenu) and name==menu.Slot_MainMenu:GetFullName()
+        if quit or main then exitViewer(quit) end
+    end)
     RegisterLoadMapPreHook(function()
         travelling = true
         followTarget = nil
@@ -798,7 +886,7 @@ gameLoop(1000, function()
                                         actor:SetDestroyedMeshOnVisibilityChange()
                                     elseif actor:IsA('/Script/Tempest.TedStructureBase') then
                                         actor:SetInitiallyVisible()
-                                        actor:ReceiveHandleConstructionVisuals(actor:IsConstructing())
+                                        if not movementIO.buildingStates or not movementIO.buildingStates[name] then movementIO:buildingVisuals(actor) end
                                     end
                                     viewerActors[name] = true
                                 end

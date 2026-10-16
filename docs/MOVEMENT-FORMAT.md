@@ -1,11 +1,12 @@
-﻿# Movement companion v1
+# Movement companion v1/v2
 
 The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Unreal replay and cannot be played independently. Store it beside the same-named `.replay` file. The generated replay basename binds the pair. Do not rename one file independently.
 
-- Header: `TEMPEST_MOVEMENT<TAB>1<TAB>basename`.
+- Header: `TEMPEST_MOVEMENT<TAB>2<TAB>basename` for new recordings; readers also accept v1.
 - `F<TAB>nativeReplaySeconds` begins a full snapshot. Times increase monotonically.
 - `U<TAB>localID<TAB>unitClass<TAB>ownerID<TAB>entityKey` defines an identity once.
 - `P<TAB>localID<TAB>X<TAB>Y<TAB>Z<TAB>Pitch<TAB>Yaw<TAB>Roll` records a received transform.
+- Optional v2 `B<TAB>localID<TAB>state` follows a P record: 1 constructing, 2 completed, 3 explicitly dead. States are discrete, never interpolated; each sample permits one state. Construction can precede native IsAlive. Death requires an observed native PawnDeath flag, never absence.
 - `E` finalizes the file. Completed, flushed frames remain usable if the process stopped without a trailer.
 
 The native bridge reads the first IntProperty-sized word at NubECS.EcsActorComponent.EntityHandle through a read-only custom property alias resolved by reflection. This build exposes the handle as a native serialized struct with no reflected fields. The prefix is combined with class and owner to identify tracks within this recording; duplicate simultaneous identities are rejected. Native testing in v0.3.8 demonstrated that these handles are NOT stable between recording and playback. Playback ignores their numeric equality and binds tracks to a unique actor of the same class and owner within 200 Unreal units of its first recorded pose. Equal/competing candidates are rejected; established bindings persist instead of being recomputed from moving positions. Identical co-located spawns may remain unmatched.

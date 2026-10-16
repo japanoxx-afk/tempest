@@ -50,12 +50,14 @@ RegisterBeginPlayPostHook=function(callback) beginPost=callback end
 RegisterLoadMapPreHook=function(callback) loadPre=callback end
 RegisterLoadMapPostHook=function(callback) loadPost=callback end
 RegisterEndPlayPreHook=function(callback) endPre=callback end
+RegisterULocalPlayerExecPreHook=function(callback) localExecPre=callback end
 loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if interval==1000 then loop=callback end end
 LoopInGameThreadWithDelay=function(interval,callback) loops[interval]=callback; if interval==1000 then loop=callback end;return interval end
 CancelDelayedAction=function() return true end
 ExecuteInGameThread=function(callback) callback() end
 Key={Q=81,W=87,E=69,R=82,T=84,Y=89,A=65,S=83,U=85,F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
+hooks={};RegisterHook=function(path,callback) hooks[path]=callback end
 '''
 
 
@@ -639,6 +641,7 @@ class BridgeTests(unittest.TestCase):
         unit.GetClass=function() return {GetFName=function() return FName('Tank_C') end} end
         unit.GetOwningPlayerID=function() return 1 end
         unit.IsAlive=function() return true end;unit.IsInContainer=function() return false end
+        unit.IsConstructing=function() return false end
         unit.K2_GetActorLocation=function() return {X=unitX or 10,Y=20,Z=30} end
         unit.K2_GetActorRotation=function() return {Pitch=0,Yaw=0,Roll=0} end
         unit.K2_SetActorLocation=function(self,pos) unitX=pos.X;locationWrites=(locationWrites or 0)+1 end
@@ -679,6 +682,75 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('Tank_C',files[0].read_text())
         self.assertEqual(self.lua.globals().movementChanges,0)
         self.lua.execute('isRecording=false;loops[100]()')
+
+    def test_building_lifecycle_records_construction_before_alive_and_explicit_death(self):
+        self.setup_online_companion()
+        self.lua.execute("""
+        unit.IsA=function(self,c) return c=='/Script/Tempest.TedPawn' or c=='/Script/Tempest.TedStructureBase' end
+        constructing=true;alive=false
+        unit.IsConstructing=function() return constructing end;unit.IsAlive=function() return alive end
+        """)
+        self.start();self.tick();self.lua.execute('began=true');self.tick()
+        self.lua.execute('loops[100]();replayTime=1;constructing=false;alive=true;loops[100]();replayTime=2;alive=false;unit.PawnDeath={bDied=true};loops[100]();isRecording=false;loops[100]()')
+        text=next((self.root/'Tempest/Saved/Demos').glob('*.movement')).read_text()
+        self.assertIn('B\t1\t1',text);self.assertIn('B\t1\t2',text);self.assertIn('B\t1\t3',text)
+        self.assertIsNone(self.lua.globals().locationWrites)
+
+    def test_building_visual_transitions_once_and_never_resurrect_death(self):
+        self.start('play',replay='TestReplay')
+        actor=self.lua.eval("""{IsA=function(self,c) return c=='/Script/Tempest.TedStructureBase' end,
+          GetFullName=function() return 'Building' end,SetActorTickEnabled=function() end,
+          ReceiveHandleConstructionVisuals=function(self,v) self.constructCalls=(self.constructCalls or 0)+1 end,
+          ReceiveOnDeath=function(self) self.deathCalls=(self.deathCalls or 0)+1 end}""")
+        for state in [1,1,2,2,3,3,2]: self.bridge.buildingVisuals(self.bridge,actor,state)
+        self.assertEqual(actor.constructCalls,2);self.assertEqual(actor.deathCalls,1)
+
+    def test_replay_exit_unpauses_and_requests_local_quit(self):
+        self.setup_viewer();self.start('play',replay='TestReplay')
+        self.lua.execute('replayPlaying=true');self.tick();self.tick()
+        self.lua.execute("""
+        worldSettings.PauserPlayerState=pc.PlayerState
+        hooks['/Script/Tempest.TedPlayerController:ExitCurrentGame']({get=function() return pc end},{get=function() return true end})
+        assert(commands[#commands]=='exit');assert(worldSettings.PauserPlayerState==nil);assert(loops[16]())
+        """)
+
+    def test_confirmed_exit_signal_only_exists_for_replay_sessions(self):
+        self.start()
+        self.assertIsNone(self.lua.globals().localExecPre)
+        self.start('play',replay='TestReplay')
+        self.lua.execute("localExecPre(nil,nil,'demopause');localExecPre(nil,nil,'quit later')")
+        self.assertFalse((self.data/'shutdown.txt').exists())
+        self.lua.execute("local _,run=localExecPre(nil,nil,' QUIT ');assert(run)")
+        self.assertEqual((self.data/'shutdown.txt').read_text(),'session123')
+
+    def test_completion_montage_only_runs_on_transition_and_not_twice(self):
+        self.start('play',replay='TestReplay')
+        self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function() return true end
+        local anim={IsValid=v,Montage_IsPlaying=function() return false end,
+          Montage_Play=function(self,m,s,r,t,stop) assert(s==1 and not stop);plays=(plays or 0)+1 end}
+        local a={IsA=function(self,c) return c=='/Script/Tempest.TedStructureBase' end,
+          GetFullName=function() return 'Structure' end,SetActorTickEnabled=function() end,
+          ReceiveHandleConstructionVisuals=function() end,SpawnAnimation={IsValid=v},
+          MeshComp={IsValid=v,GetAnimInstance=function() return anim end,SetComponentTickEnabled=function() end}}
+        bridge:buildingVisuals(a,2);assert(plays==nil)
+        bridge:buildingVisuals(a,1);bridge:buildingVisuals(a,2);bridge:buildingVisuals(a,2)
+        assert(plays==1)
+        """)
+
+    def test_replay_menu_exit_ignores_hover_and_other_slots(self):
+        self.setup_viewer();self.start('play',replay='TestReplay')
+        self.lua.execute('replayPlaying=true');self.tick();self.tick()
+        self.lua.execute("""
+        local slot={IsValid=function() return true end,GetFullName=function() return 'Menu.Main' end}
+        local menu={IsValid=function() return true end,Slot_MainMenu=slot,Slot_Quit=invalid}
+        local wrap=function(v) return {get=function() return v end} end
+        local hook=hooks['/Script/Tempest.TedPauseMenuScreen:OnPauseMenuButtonSlotAction']
+        hook(wrap(menu),nil,wrap(slot),wrap(1));assert(commands[#commands]~='open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
+        hook(wrap(menu),nil,wrap(slot),wrap(0));assert(commands[#commands]=='open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
+        assert(loops[16]())
+        """)
 
     def test_online_companion_does_not_start_without_native_recording(self):
         self.setup_online_companion()

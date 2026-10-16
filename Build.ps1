@@ -7,7 +7,7 @@ foreach ($file in $files) { Copy-Item (Join-Path $PSScriptRoot $file) $stage -Re
 # v0.1.0's updater copies a fixed list of five files. Embed bridge resources in
 # the entry script so a direct update from that release can still start.
 $bootstrap=@('$script:BridgeSourceRoot=Join-Path $env:LOCALAPPDATA ''TempestReplayLauncher\payload\'+$version+'''')
-foreach ($resource in @('Bridge.ps1','ReplayBridge\Scripts\main.lua','ReplayBridge\Scripts\Movement.lua','ReplayBridge\README.md')) {
+foreach ($resource in @('Bridge.ps1','ReplayBridge\Scripts\main.lua','ReplayBridge\Scripts\Movement.lua','ReplayBridge\WatchExit.ps1','ReplayBridge\README.md')) {
  $base64=[Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $PSScriptRoot $resource)))
  $parent=Split-Path $resource -Parent
  $bootstrap+='New-Item -ItemType Directory -Path (Join-Path $script:BridgeSourceRoot '''+$parent+''') -Force | Out-Null'
