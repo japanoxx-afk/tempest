@@ -27,6 +27,36 @@ class MovementTests(unittest.TestCase):
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
 
+    def test_pose_binding_ignores_different_runtime_entity_numbers_and_stays_attached(self):
+        self.create()
+        self.lua.execute("""
+        samples=r:at(0);bound={}
+        actors={{name='actor999',class='Tank_C',owner=1,position={X=0,Y=20,Z=30}}}
+        result=M.match(r.tracks,samples,actors,bound)
+        assert(result['Tank_C:1:2076'].name=='actor999')
+        samples=r:at(0.5);actors[1].position.X=5000
+        result=M.match(r.tracks,samples,actors,bound)
+        assert(result['Tank_C:1:2076'].name=='actor999')
+        """)
+
+    def test_pose_binding_rejects_ambiguous_spawns_wrong_owner_and_far_actors(self):
+        self.create()
+        self.lua.execute("""
+        samples=r:at(0);bound={}
+        function actor(name,x,owner) return {name=name,class='Tank_C',owner=owner,position={X=x,Y=20,Z=30}} end
+        assert(next(M.match(r.tracks,samples,{actor('a',0,1),actor('b',0,1)},bound))==nil)
+        assert(next(M.match(r.tracks,samples,{actor('a',0,0)},bound))==nil)
+        assert(next(M.match(r.tracks,samples,{actor('a',5000,1)},bound))==nil)
+        """)
+
+    def test_pose_binding_never_assigns_one_actor_to_two_tracks(self):
+        self.lua.execute("""
+        w=M.writer(path,'Test');w:frame(0,{unit(0,0,1),unit(0,0,2)});w:close();r=M.reader(path,'Test')
+        samples=r:at(0);bound={}
+        result=M.match(r.tracks,samples,{{name='one',class='Tank_C',owner=1,position={X=0,Y=20,Z=30}}},bound)
+        assert(next(result)==nil and next(bound)==nil)
+        """)
+
     def test_roundtrip_and_interpolation_use_replay_time(self):
         self.create()
         self.lua.execute("sample=r:at(0.5)['Tank_C:1:2076']")

@@ -1,4 +1,4 @@
-# Tempest Replay Bridge (experimental)
+﻿# Tempest Replay Bridge (experimental)
 
 UE4SS Lua integration for Tempest Rising UE 5.4.3. A clean restart with a fresh launcher request is required. Without a request, the bridge stays idle. The probe is read-only. The launcher updates installed Lua on the next clean bridge launch.
 
@@ -19,3 +19,6 @@ v0.3.5: LockAlways confines the mouse while the replay window has focus. F7 cycl
 The movement companion (v0.3.6) samples locally received TedPawn transforms and alive presence at 100 ms intervals while the native ReplaySubsystem is recording. This also runs in online client/listen-server worlds without changing their replication flags, calling RPCs, or moving live units. The optional `<basename>.movement` file is saved beside `<basename>.replay`. Playback alone matches the replicated ECS EntityHandle prefix plus unit class and owner and interpolates transforms against native replay time, including pause/speed changes. A read-only UE4SS alias resolves EntityHandle by its reflected property, rather than a fixed process address. Duplicate identities fail closed; malformed companions disable only movement supplementation. Native replay remains available. Units/data that never reach the local client are not reconstructed.
 
 Keep both files when moving or sharing a recording. Launcher import copies both. Legacy files without a companion use native replay data. The codec parses data records only, streams two adjacent frames, and never executes file contents. Runtime movement-state.txt reports the current session, file, frames and unit count. Native bridge/module copying and legacy updater embedded payload include Movement.lua. See the latest native validation section for tested scope.
+
+
+v0.3.8 supersedes the v0.3.5 replication changes and v0.3.6 playback identity assumption: recording never changes actor replication or game speed. Handles identify tracks only within a recording; playback binds unique same-class/same-owner initial poses and retains the actor binding. Ambiguous spawns remain native. U calls the minimap, player-list and statistics panels' own hide/show button handlers during actual playback only.

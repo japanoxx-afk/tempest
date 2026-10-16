@@ -1,4 +1,4 @@
-# Movement companion v1
+﻿# Movement companion v1
 
 The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Unreal replay and cannot be played independently. Store it beside the same-named `.replay` file. The generated replay basename binds the pair. Do not rename one file independently.
 
@@ -8,9 +8,9 @@ The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Un
 - `P<TAB>localID<TAB>X<TAB>Y<TAB>Z<TAB>Pitch<TAB>Yaw<TAB>Roll` records a received transform.
 - `E` finalizes the file. Completed, flushed frames remain usable if the process stopped without a trailer.
 
-The native bridge reads the first IntProperty-sized word at NubECS.EcsActorComponent.EntityHandle through a read-only custom property alias resolved by reflection. This build exposes the handle as a native serialized struct with no reflected fields. The prefix is combined with class and owner; duplicate simultaneous identities are rejected. No nearest-unit, spawn-order, or object-name fallback guesses are made.
+The native bridge reads the first IntProperty-sized word at NubECS.EcsActorComponent.EntityHandle through a read-only custom property alias resolved by reflection. This build exposes the handle as a native serialized struct with no reflected fields. The prefix is combined with class and owner to identify tracks within this recording; duplicate simultaneous identities are rejected. Native testing in v0.3.8 demonstrated that these handles are NOT stable between recording and playback. Playback ignores their numeric equality and binds tracks to a unique actor of the same class and owner within 200 Unreal units of its first recorded pose. Equal/competing candidates are rejected; established bindings persist instead of being recomputed from moving positions. Identical co-located spawns may remain unmatched.
 
-The reader retains two adjacent full snapshots, interpolates positions and shortest rotation arcs, does not create actors and only displays actors recorded as alive and outside a container, and stops applying transforms after recorded data ends. A native ReplaySubsystem.IsPlaying gate is required before any actor mutation. Recording reads only already-received coordinates; it does not request extra server state or alter online replication. Existing standalone SetReplicateMovement recording support remains separate.
+The reader retains two adjacent full snapshots, interpolates positions and shortest rotation arcs, does not create actors and only displays actors recorded as alive and outside a container, and stops applying transforms after recorded data ends. A native ReplaySubsystem.IsPlaying gate is required before any actor mutation. Recording reads only already-received coordinates; it does not request extra server state or alter online replication. v0.3.8 removes standalone SetReplicateMovement/ForceNetUpdate changes too; neither online nor offline recording changes actor movement or live game speed.
 
 Limits: 20,000 samples per snapshot, 1,000,000 unique IDs, finite coordinates bounded to absolute values below 1e9, tokens up to 160 characters and records up to 1024 characters. Invalid data disables supplementation with movement_error rather than executing or interpreting it as code. Seeking backward is unsupported, consistent with the launcher. The sidecar grows with match length and local unit count.
 

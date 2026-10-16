@@ -54,7 +54,7 @@ loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if in
 LoopInGameThreadWithDelay=function(interval,callback) loops[interval]=callback; if interval==1000 then loop=callback end;return interval end
 CancelDelayedAction=function() return true end
 ExecuteInGameThread=function(callback) callback() end
-Key={F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
+Key={U=85,F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
 '''
 
@@ -316,21 +316,21 @@ class BridgeTests(unittest.TestCase):
 
     def test_camera_input_does_not_run_in_live_game(self):
         self.setup_input()
-        self.lua.execute('keybinds[Key.C]();loops[33]()')
+        self.lua.execute('keybinds[Key.C]();loops[16]()')
         self.assertEqual(self.lua.eval('#moves'),0)
 
     def test_selected_target_is_followed_and_click_cancels_tracking(self):
         self.setup_input()
-        self.lua.execute('replayPlaying=true;keybinds[Key.C]();loops[33]()')
+        self.lua.execute('replayPlaying=true;keybinds[Key.C]();loops[16]()')
         self.assertEqual(self.lua.eval('moves[1].X'),100)
-        self.lua.execute('position.X=300;loops[33]()')
+        self.lua.execute('position.X=300;loops[16]()')
         self.assertEqual(self.lua.eval('moves[2].X'),300)
-        self.lua.execute('down=true;loops[33]()')
+        self.lua.execute('down=true;loops[16]()')
         self.assertEqual(self.lua.eval('#moves'),2)
 
     def test_dead_target_stops_tracking(self):
         self.setup_input()
-        self.lua.execute('replayPlaying=true;keybinds[Key.C]();actor.IsAlive=function() return false end;loops[33]()')
+        self.lua.execute('replayPlaying=true;keybinds[Key.C]();actor.IsAlive=function() return false end;loops[16]()')
         self.assertEqual(self.lua.eval('#moves'),0)
 
     def test_i_toggles_live_statistics_without_camera_movement(self):
@@ -352,10 +352,10 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("""
         replayPlaying=true
         pc.GetMousePosition=function(self,x,y) x.LocationX=999;y.LocationY=500;return true end
-        loops[33]()
+        loops[16]()
         """)
         self.assertLess(self.lua.eval('moves[1].Y'),0)
-        self.lua.execute('pc.GetMousePosition=function(self,x,y) x.LocationX=1001;y.LocationY=500;return true end;loops[33]()')
+        self.lua.execute('pc.GetMousePosition=function(self,x,y) x.LocationX=1001;y.LocationY=500;return true end;loops[16]()')
         self.assertEqual(self.lua.eval('#moves'),1)
 
     def test_world_teardown_disables_all_viewer_callbacks_before_object_access(self):
@@ -373,7 +373,7 @@ class BridgeTests(unittest.TestCase):
         keybinds[Key.C]();keybinds[Key.I]();keybinds[Key.F8]()
         initHook({get=function() error('stale world context') end})
         """)
-        self.assertTrue(self.lua.eval('loops[33]()'))
+        self.assertTrue(self.lua.eval('loops[16]()'))
         self.assertTrue(self.tick())
         self.assertIn('viewer_stopped', (self.data / 'status.txt').read_text())
 
@@ -396,20 +396,20 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute('replayPlaying=true')
         self.tick()
         self.lua.execute('endPre({get=function() return actor end},{get=function() return 0 end})')
-        self.assertFalse(self.lua.eval('loops[33]()'))
+        self.assertFalse(self.lua.eval('loops[16]()'))
         self.lua.execute("""
         endPre({get=function() error('must not inspect actors during transition') end},{get=function() return 1 end})
         FindAllOf=function() error('stale controller') end
         """)
         self.assertTrue(self.tick())
-        self.assertTrue(self.lua.eval('loops[33]()'))
+        self.assertTrue(self.lua.eval('loops[16]()'))
 
     def test_mouse_loop_reuses_game_thread_timer_without_queuing_callbacks(self):
         self.setup_input()
         self.lua.execute("""
         replayPlaying=true
         ExecuteInGameThread=function() error('per-frame coroutine dispatch') end
-        for i=1,100 do loops[33]() end
+        for i=1,100 do loops[16]() end
         """)
         self.assertFalse((self.data / 'status.txt').read_text().find('viewer_control_error') >= 0)
 
@@ -463,6 +463,32 @@ class BridgeTests(unittest.TestCase):
             self.tick()
             self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,expected)
 
+    def test_u_calls_panel_buttons_only_in_replay_and_toggles_back(self):
+        self.setup_input()
+        self.lua.execute("""
+        clicks=0
+        function panel() return {v=4,GetVisibility=function(self) return self.v end} end
+        hud={IsValid=function() return true end,IsInViewport=function() return true end,
+            GetFullName=function() return '/Engine/Transient.TestHud' end,
+            VerticalBox_Minimap=panel(),PlayerInfoPanel=panel(),StatsOverview=panel()}
+        local function toggle(p) clicks=clicks+1;p.v=p.v==1 and 4 or 1 end
+        hud.MinimapShow_ButtonClick=function(self) toggle(self.VerticalBox_Minimap) end
+        hud.PlayerListShow_ButtonClick=function(self) toggle(self.PlayerInfoPanel) end
+        hud.SingularStatShow_ButtonClick=function(self) toggle(self.StatsOverview) end
+        local oldFind=FindAllOf;FindAllOf=function(cls) if cls=='TedThirdPartySpectatorHud' then return {hud} end;return oldFind(cls) end
+        keybinds[Key.U]();assert(clicks==0)
+        replayPlaying=true;keybinds[Key.U]();assert(clicks==3 and hud.StatsOverview.v==1)
+        keybinds[Key.U]();assert(clicks==6 and hud.StatsOverview.v==4)
+        """)
+
+    def test_recording_has_no_viewer_hotkeys_or_speed_writes(self):
+        self.start();self.lua.execute('began=true');self.tick()
+        (self.data / 'control.txt').write_text('session123\nspeed=4\n')
+        self.tick()
+        self.assertIsNone(self.lua.globals().worldSettings.DemoPlayTimeDilation)
+        self.assertIsNone(self.lua.globals().worldSettings.TimeDilation)
+        self.assertEqual(len(list(self.lua.globals().keybinds.keys())),0)
+
     def setup_movement_actor(self):
         self.lua.execute("""
         movementChanges=0
@@ -474,24 +500,24 @@ class BridgeTests(unittest.TestCase):
           ForceNetUpdate=function() end}
         """)
 
-    def test_standalone_unit_movement_is_enabled_once_for_recording(self):
+    def test_standalone_recording_does_not_modify_unit_replication(self):
         self.setup_movement_actor()
         self.start()
-        self.lua.execute('beginPost({get=function() return unit end});beginPost({get=function() return unit end})')
-        self.assertEqual(self.lua.globals().movementChanges,1)
+        self.assertIsNone(self.lua.globals().beginPost)
+        self.assertEqual(self.lua.globals().movementChanges,0)
 
     def test_online_unit_replication_is_not_modified(self):
         self.setup_movement_actor()
         self.lua.execute('world.NetDriver={IsValid=function() return true end}')
         self.start()
-        self.lua.execute('beginPost({get=function() return unit end})')
+        self.assertIsNone(self.lua.globals().beginPost)
         self.assertEqual(self.lua.globals().movementChanges,0)
 
     def test_client_without_authority_does_not_change_movement_replication(self):
         self.setup_movement_actor()
         self.lua.execute('world.AuthorityGameMode=invalid')
         self.start()
-        self.lua.execute('beginPost({get=function() return unit end})')
+        self.assertIsNone(self.lua.globals().beginPost)
         self.assertEqual(self.lua.globals().movementChanges,0)
 
     def setup_online_companion(self):
@@ -566,9 +592,9 @@ class BridgeTests(unittest.TestCase):
         path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
         path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t123\t20\t30\t0\t0\t0\nE\n')
         # setup_input already started play mode; its input callback sees the newly provided native mocks.
-        self.lua.execute('loops[33]()')
+        self.lua.execute('loops[16]()')
         self.assertIsNone(self.lua.globals().locationWrites)
-        self.lua.execute('replayPlaying=true;loops[33]()')
+        self.lua.execute('replayPlaying=true;loops[16]()')
         self.assertEqual(self.lua.globals().unitX,123)
         self.assertEqual(self.lua.globals().movementChanges,0)
 
@@ -576,21 +602,21 @@ class BridgeTests(unittest.TestCase):
         self.setup_input();self.setup_online_companion()
         path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
         path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t123\t20\t30\t0\t0\t0\nF\t1\nE\n')
-        self.lua.execute('unit.IsAlive=function() return false end;replayPlaying=true;loops[33]()')
+        self.lua.execute('unit.IsAlive=function() return false end;replayPlaying=true;loops[16]()')
         self.assertEqual(self.lua.globals().unitX,123)
         self.assertFalse(self.lua.globals().unitHidden)
-        self.lua.execute('replayTime=1;loops[33]()')
+        self.lua.execute('replayTime=1;loops[16]()')
         self.assertTrue(self.lua.globals().unitHidden)
 
     def test_companion_opened_before_first_world_status_survives_world_ready(self):
         self.setup_input();self.setup_online_companion()
         path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
         path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t20\t30\t0\t0\t0\nF\t1\nP\t1\t100\t20\t30\t0\t0\t0\nF\t2\nP\t1\t200\t20\t30\t0\t0\t0\nE\n')
-        self.lua.execute('replayPlaying=true;loops[33]()')
+        self.lua.execute('replayPlaying=true;loops[16]()')
         self.tick()
-        self.lua.execute('replayTime=0.5;loops[33]()')
+        self.lua.execute('replayTime=0.5;loops[16]()')
         self.assertEqual(self.lua.globals().unitX,50)
-        self.lua.execute('replayTime=3;loops[33]()')
+        self.lua.execute('replayTime=3;loops[16]()')
 
     def test_duplicate_online_identity_disables_companion_instead_of_swapping_units(self):
         self.setup_online_companion()

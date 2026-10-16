@@ -140,28 +140,6 @@ local function prepareSpectator()
         if not ok then status('spectator_setup_error', tostring(err)) end
     end)
 end
-local movementConfigured = {}
-local function captureMovement(actor)
-    if mode ~= 'record' or not valid(actor) or not actor:IsA('/Script/Tempest.TedPawn') or actor:IsA('/Script/Tempest.TedStructureBase') then return false end
-    local name=actor:GetFullName()
-    if name:find('Conformation') or name:find('Ghost') or name:find('FoWHighlight') then return false end
-    local world=actor:GetWorld()
-    -- Changing replicated actor movement must not alter an online match.
-    -- Only standalone authority worlds may opt into native demo transforms.
-    if not valid(world) or not valid(world.AuthorityGameMode) or valid(member(world,'NetDriver')) then return false end
-    if not movementConfigured[name] then
-        actor:SetReplicateMovement(true)
-        actor:ForceNetUpdate()
-        movementConfigured[name]=true
-    end
-    return true
-end
-if mode == 'record' then
-    RegisterBeginPlayPostHook(function(context)
-        local ok,err=pcall(function() captureMovement(context:get()) end)
-        if not ok then status('movement_record_error',tostring(err)) end
-    end)
-end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
 -- Reuse a stable game-thread timer. Creating Lua coroutine callbacks from an
 -- async loop every 33 ms stresses UE4SS's shared Lua registry/collector.
@@ -192,7 +170,7 @@ function movementIO:identity(actor)
         end) end
         assert(supported,'Unsupported ECS EntityHandle layout')
         -- Read-only alias at the reflected property's start, never a fixed process offset.
-        -- EntityHandle is replicated; object names/addresses are not stable across playback.
+        -- EntityHandle identifies a track within the recording only. Playback uses pose binding.
         RegisterCustomProperty({Name='TempestReplayEntityKey',Type=PropertyTypes.IntProperty,
             BelongsToClass='/Script/NubECS.EcsActorComponent',OffsetInternal={Property='EntityHandle',RelativeOffset=0}})
         self.aliasReady=true
@@ -240,26 +218,29 @@ function movementIO:play(subsystem)
     end
     if not self.reader then return end
     local time=subsystem:GetReplayCurrentTime()
-    local samples=self.reader:at(time);local actors,duplicates={},{}
+    local samples=self.reader:at(time);local actors={}
     if not self.reader.following and self.reader.previous and time>self.reader.previous.time+0.5 then
         self.visible={};self.absent={};self.applied=0;return
     end
+    self.origins=self.origins or {};self.bindings=self.bindings or {}
+    local candidates={}
     for _,actor in ipairs(FindAllOf('TedPawn') or {}) do
-        -- Client demos can restore zero/default health while a recorded unit was alive.
-        -- Presence in a full movement snapshot is the recorder's actual IsAlive result.
         if valid(actor) and not actor:IsInContainer() then
-            local key=self:identity(actor)
-            if key then
-                if actors[key] then duplicates[key]=true end
-                actors[key]=actor
+            local name=actor:GetFullName()
+            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') then
+                self.origins[name]=self.origins[name] or actor:K2_GetActorLocation()
+                candidates[#candidates+1]={name=name,actor=actor,position=self.origins[name],
+                    class=actor:GetClass():GetFName():ToString(),owner=actor:GetOwningPlayerID()}
             end
         end
     end
+    local matched=self.codec.match(self.reader.tracks,samples,candidates,self.bindings)
+    for key,candidate in pairs(matched) do actors[key]=candidate.actor end
     local applied,visible,absent=0,{},{}
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
-        if actor and not duplicates[key] then
+        if actor then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if not self.visible or not self.visible[name] then
                 actor:K2_SetDefaultVisibility(true,true)
@@ -271,8 +252,8 @@ function movementIO:play(subsystem)
             applied=applied+1
         end
     end
-    for _,actor in pairs(actors) do
-        local name=actor:GetFullName()
+    for _,candidate in ipairs(candidates) do
+        local actor=candidate.actor;local name=candidate.name
         if self.managed[name] and not visible[name] then absent[name]=true;actor:SetActorHiddenInGame(true) end
     end
     self.visible=visible
@@ -298,7 +279,8 @@ local speeds = {0.5,1,2,4}
 local function setViewerSpeed(pc,value)
     local allowed=false
     for _,speed in ipairs(speeds) do if value==speed then allowed=true end end
-    if not allowed then return end
+    local subsystem=FindFirstOf('ReplaySubsystem')
+    if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() or not allowed then return end
     viewerSpeed=value
     pc:GetWorld():K2_GetWorldSettings().DemoPlayTimeDilation=value
     appliedSpeed=value
@@ -416,6 +398,21 @@ if mode == 'play' then
     bind(Key.I,function()
         liveWidgets('TedThirdPartySpectatorHud',function(widget) widget:SingularStatShow_ButtonClick() end)
     end)
+    local hudHidden=false
+    bind(Key.U,function()
+        local panels={{'VerticalBox_Minimap','MinimapShow_ButtonClick'},
+            {'PlayerInfoPanel','PlayerListShow_ButtonClick'},{'StatsOverview','SingularStatShow_ButtonClick'}}
+        liveWidgets('TedThirdPartySpectatorHud',function(widget)
+            if not widget:IsInViewport() then return end
+            for _,panel in ipairs(panels) do
+                local visibility=widget[panel[1]]:GetVisibility()
+                local shown=visibility~=1 and visibility~=2
+                if shown~=hudHidden then widget[panel[2]](widget) end
+            end
+        end)
+        hudHidden=not hudHidden
+        status('viewer_hud',hudHidden and 'Observer panels hidden through their buttons' or 'Observer panels shown through their buttons')
+    end)
     bind(Key.C,function(pc)
         local selected = pc:GetSelectedPawns()
         local target = selected and selected[1]
@@ -437,7 +434,7 @@ if mode == 'play' then
     end)
     bind(Key.F8,function(pc) command(pc,'demopause') end)
     local inputPending, inputErrors, mouseWasDown = false, 0, false
-    gameLoop(33,function()
+    gameLoop(16,function()
         if viewerStopped then return true end
         if travelling or inputPending then return false end
         inputPending = true
@@ -492,7 +489,6 @@ gameLoop(100,function()
             local subsystem=FindFirstOf('ReplaySubsystem')
             if not valid(subsystem) or not subsystem:IsRecording() then movementIO:close();return end
             local actors=FindAllOf('TedPawn') or {}
-            for _,actor in ipairs(actors) do captureMovement(actor) end
             movementIO:record(subsystem,recordingName,actors)
         end)
         if not ok then movementIO:fail(err);return true end
@@ -706,7 +702,6 @@ gameLoop(1000, function()
                     ensureReplayDriver(); diagnostics()
                     recordingIndex = recordingIndex + 1
                     local name = 'Tempest_' .. os.date('%Y%m%d_%H%M%S') .. '_' .. session:sub(1,8) .. '_' .. recordingIndex
-                    for _,actor in ipairs(FindAllOf('TedPawn') or {}) do captureMovement(actor) end
                     local output = command(pc, 'demorec ' .. name)
                     attemptedWorld = key
                     recordingWorld = key

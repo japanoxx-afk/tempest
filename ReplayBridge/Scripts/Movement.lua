@@ -47,7 +47,7 @@ end
 function M.reader(path,name)
     local f=io.open(path,'rb');if not f then return nil end
     if (f:read('*l') or ''):gsub('\r$','')~='TEMPEST_MOVEMENT\t1\t'..name then f:close();error('Movement companion header/name mismatch') end
-    local r={file=f,definitions={},identities={},last=-1,frames=0}
+    local r={file=f,definitions={},identities={},tracks={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
     function r:nextFrame()
         if not self.file then return nil end
@@ -63,13 +63,14 @@ function M.reader(path,name)
             elseif a[1]=='U' then
                 local id,owner,entity=tonumber(a[2]),tonumber(a[4]),tonumber(a[5]);local key=M.key(a[3],owner,entity)
                 assert(frame and #a==5 and id and id%1==0 and id>0 and id<=1000000 and key and not self.definitions[id] and not self.identities[key],'Invalid movement unit definition')
-                self.definitions[id]=key;self.identities[key]=id
+                self.definitions[id]=key;self.identities[key]=id;self.tracks[key]={class=a[3],owner=owner}
             elseif a[1]=='P' then
                 local id=tonumber(a[2]);local key=id and self.definitions[id]
                 assert(frame and #a==8 and key and not frame.units[key],'Invalid movement sample identity')
                 local v={};for i=3,8 do v[i]=tonumber(a[i]);assert(finite(v[i]),'Invalid movement coordinate') end
                 frame.count=frame.count+1;assert(frame.count<=20000,'Too many movement samples')
                 frame.units[key]={position={X=v[3],Y=v[4],Z=v[5]},rotation={Pitch=v[6],Yaw=v[7],Roll=v[8]}}
+                if not self.tracks[key].position then self.tracks[key].position=frame.units[key].position;self.tracks[key].time=frame.time end
             elseif a[1]=='E' and #a==1 then self:close();return frame
             else error('Invalid movement record') end
         end
@@ -97,5 +98,43 @@ function M.reader(path,name)
         return result
     end
     return r
+end
+-- Entity handles are local runtime IDs, not stable replay IDs. Bind by a unique
+-- class/owner/initial pose match, then retain the same actor for that track.
+-- Ambiguous co-located spawns remain native rather than swapping units.
+function M.match(tracks,samples,actors,bound)
+    local byName,result,claimed={},{},{}
+    for _,a in ipairs(actors) do byName[a.name]=a end
+    for key,name in pairs(bound) do
+        local a=byName[name];local t=tracks[key]
+        if a and t and a.class==t.class and a.owner==t.owner then
+            claimed[name]=true;if samples[key] then result[key]=a end
+        else bound[key]=nil end
+    end
+    local proposals,competition={},{}
+    for key in pairs(samples) do
+        if not bound[key] then
+            local t=tracks[key];local best,score,runner=nil,math.huge,math.huge
+            for _,a in ipairs(actors) do
+                if t and t.position and not claimed[a.name] and a.class==t.class and a.owner==t.owner then
+                    local p,q=a.position,t.position
+                    local d=(p.X-q.X)^2+(p.Y-q.Y)^2+(p.Z-q.Z)^2
+                    if d<score then runner=score;score=d;best=a elseif d<runner then runner=d end
+                end
+            end
+            if best and score<=200^2 and runner-score>1 then
+                proposals[key]={actor=best,score=score}
+                local c=competition[best.name] or {};c[#c+1]={key=key,score=score};competition[best.name]=c
+            end
+        end
+    end
+    for key,p in pairs(proposals) do
+        local unique=true
+        for _,other in ipairs(competition[p.actor.name]) do
+            if other.key~=key and other.score<=p.score+1 then unique=false end
+        end
+        if unique then bound[key]=p.actor.name;result[key]=p.actor end
+    end
+    return result
 end
 return M
