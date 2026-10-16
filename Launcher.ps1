@@ -8,8 +8,8 @@ $root = $PSScriptRoot
 $data = Join-Path $env:LOCALAPPDATA 'TempestReplayLauncher'
 New-Item $data -ItemType Directory -Force | Out-Null
 $configFile = Join-Path $data 'settings.json'
-$settings = @{ game = 'C:\Program Files (x86)\Steam\steamapps\common\Tempest Rising'; replays = (Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos') }
-if (Test-Path $configFile) { try { $c = Get-Content $configFile -Raw | ConvertFrom-Json; $settings.game = $c.game; $settings.replays = $c.replays } catch {} }
+$settings = @{ autoRecord = $true; game = 'C:\Program Files (x86)\Steam\steamapps\common\Tempest Rising'; replays = (Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos') }
+if (Test-Path $configFile) { try { $c = Get-Content $configFile -Raw | ConvertFrom-Json; $settings.game = $c.game; $settings.replays = $c.replays; if ($c.autoRecord -is [bool]) { $settings.autoRecord = $c.autoRecord } } catch {} }
 $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json).version
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="TEMPEST · Replay Launcher" Width="960" Height="800" MinWidth="900" MinHeight="760" Background="#101820" Foreground="#E6EDF3" WindowStartupLocation="CenterScreen">
@@ -30,22 +30,46 @@ $ui = @{}
 $ui.Version.Text = "Replay Launcher v$version"
 $ui.GamePath.Text = $settings.game
 $ui.ReplayPath.Text = $settings.replays
+$ui.AutoRecord.IsChecked = $settings.autoRecord
 function Show-Error($e) { $ui.Status.Text = $e.Exception.Message }
 function Save-Paths {
  if (-not [IO.Path]::IsPathRooted($ui.GamePath.Text) -or -not [IO.Path]::IsPathRooted($ui.ReplayPath.Text)) { throw '절대 경로를 입력하세요.' }
- $settings.game = $ui.GamePath.Text; $settings.replays = $ui.ReplayPath.Text
+ $settings.game = $ui.GamePath.Text; $settings.replays = $ui.ReplayPath.Text; $settings.autoRecord = [bool]$ui.AutoRecord.IsChecked
  $settings | ConvertTo-Json | Set-Content $configFile -Encoding UTF8
+}
+$script:librarySignature=$null
+function Sync-ReplayLibrary([bool]$SelectNewest=$false) {
+ $folder=$ui.ReplayPath.Text
+ $files=@(if (Test-Path -LiteralPath $folder -PathType Container) { Get-ChildItem -LiteralPath $folder -Filter '*.replay' -File | Sort-Object LastWriteTime -Descending })
+ $signature=$folder+'|'+(($files | ForEach-Object { $_.Name+':'+$_.Length+':'+$_.LastWriteTimeUtc.Ticks }) -join '|')
+ if ($signature -ne $script:librarySignature) {
+  $selectedPath=if ($ui.ReplayList.SelectedItem) { $ui.ReplayList.SelectedItem.FullName } else { $null }
+  $ui.ReplayList.ItemsSource=$files
+  $ui.ReplayList.SelectedItem=@($files | Where-Object FullName -eq $selectedPath | Select-Object -First 1)[0]
+  $script:librarySignature=$signature
+ }
+ if ($files.Count -gt 0 -and ($SelectNewest -or -not $ui.ReplayList.SelectedItem)) { $ui.ReplayList.SelectedItem=$files[0] }
+}
+function Get-RecordingFileMessage([string]$Detail,[string]$Folder=(Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos')) {
+ $name=($Detail -split ';')[0]
+ if ($name -notmatch '^Tempest_[A-Za-z0-9_-]+$') { return '기록 파일 이름 확인 필요' }
+ $file=Join-Path $Folder ($name+'.replay')
+ if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return '기록 파일 없음 · 녹화 성공 아님' }
+ $item=Get-Item -LiteralPath $file
+ if ($item.Length -eq 0) { return '빈 기록 파일 · 녹화 성공 아님' }
+ return "저장 파일 확인: $($item.Name) · $($item.Length) 바이트 · $file (재생 검증 필요)"
 }
 function Refresh-Replays {
  Save-Paths
- $ui.ReplayList.ItemsSource = @(if (Test-Path -LiteralPath $settings.replays) { Get-ChildItem -LiteralPath $settings.replays -Filter '*.replay' -File | Sort-Object LastWriteTime -Descending })
- $ui.Status.Text = "리플레이 $($ui.ReplayList.Items.Count)개 · 실제 게임 리플레이 데이터가 필요합니다."
+ Sync-ReplayLibrary
+ $ui.Status.Text = "리플레이 $($ui.ReplayList.Items.Count)개 · 목록은 2초마다 자동 갱신됩니다."
 }
 function Browse-Path($target) {
  $dialog = New-Object Windows.Forms.FolderBrowserDialog
  if ($dialog.ShowDialog() -eq 'OK') { $target.Text = $dialog.SelectedPath }
  $dialog.Dispose()
 }
+$ui.AutoRecord.Add_Click({ try { Save-Paths } catch { Show-Error $_ } })
 $ui.BrowseGame.Add_Click({ Browse-Path $ui.GamePath })
 $ui.BrowseReplay.Add_Click({ Browse-Path $ui.ReplayPath })
 $ui.Refresh.Add_Click({ try { Refresh-Replays } catch { Show-Error $_ } })
@@ -65,18 +89,18 @@ $ui.Diagnostics.Add_Click({ try { $p=Get-BridgePaths $settings.game; New-Item $p
 $timer=New-Object Windows.Threading.DispatcherTimer
 $timer.Interval=[TimeSpan]::FromSeconds(2)
 $timer.Add_Tick({
- if (-not $script:bridgeSession) { return }
  try {
+  Sync-ReplayLibrary
+  if (-not $script:bridgeSession) { return }
   $p=Get-BridgePaths $settings.game; $statusFile=Join-Path $p.Data 'status.txt'
   $lines=@(if (Test-Path $statusFile) { Get-Content $statusFile -Encoding UTF8 })
   if ($lines.Count -ge 4 -and $lines[0] -eq $script:bridgeSession) {
    $labels=@{record_waiting='녹화 미시작 · 경기 시작 판정 대기';record_not_started='이 경기 녹화 안 됨 · 시작 판정 확인 필요';record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료';viewer_initializing='관전자 HUD·카메라 연결됨';play_requested='리플레이 로딩 요청'}
    $label=if ($labels.ContainsKey($lines[2])) { $labels[$lines[2]] } else { $lines[2] }
    $ui.BridgeStatus.Text="브리지: $label · $($lines[3])"
-   if ($lines[2] -in @('record_requested','record_driver_active')) {
-    $name=($lines[3] -split ';')[0]; $file=Join-Path (Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos') ($name+'.replay')
-    if (Test-Path -LiteralPath $file) { $ui.BridgeStatus.Text += " · 파일 존재: $((Get-Item -LiteralPath $file).Length) 바이트 (재생 검증 필요)" }
-    else { $ui.BridgeStatus.Text += ' · 기록 파일 미확인: 녹화 성공 아님' }
+   if ($lines[2] -in @('record_requested','record_driver_active','record_session_left')) {
+    $ui.BridgeStatus.Text += ' · '+(Get-RecordingFileMessage $lines[3])
+    if ($lines[2] -eq 'record_session_left') { Sync-ReplayLibrary $true }
    }
   } elseif (((Get-Date)-$script:bridgeStarted).TotalSeconds -gt 120) { $ui.BridgeStatus.Text='브리지 응답 없음. 진단 로그를 확인하세요. 녹화되지 않았을 수 있습니다.' }
  } catch { $ui.BridgeStatus.Text=$_.Exception.Message }

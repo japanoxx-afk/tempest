@@ -19,6 +19,8 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path), [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count) { throw ($errors | Out-String) }
           }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_library.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher library tests failed' }
           ./Build.ps1
       - name: Publish
         env:
