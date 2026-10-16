@@ -23,7 +23,7 @@ pc = {IsValid=function() return true end, GetWorld=function() return world end,
 pc.Player={IsValid=function() return true end,IsA=function(self,cls) return cls=='/Script/Engine.LocalPlayer' end}
 bot={IsValid=function() return true end,Player=invalid}
 controllers={bot,pc}
-FindAllOf=function() return controllers end
+FindAllOf=function(cls) if cls=='PlayerController' then return controllers end;return {} end
 consoleFunction={IsValid=function() return true end}
 lib = {IsValid=function() return true end,
  CallFunction=function() error('Unbound UFunction context') end,
@@ -46,6 +46,7 @@ StaticFindObject=function(path)
 end
 LoadAsset=function() return {IsValid=function() return true end} end
 RegisterInitGameStatePostHook=function(callback) initHook=callback end
+RegisterBeginPlayPostHook=function(callback) beginPost=callback end
 RegisterLoadMapPreHook=function(callback) loadPre=callback end
 RegisterLoadMapPostHook=function(callback) loadPost=callback end
 RegisterEndPlayPreHook=function(callback) endPre=callback end
@@ -53,7 +54,7 @@ loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if in
 LoopInGameThreadWithDelay=function(interval,callback) loops[interval]=callback; if interval==1000 then loop=callback end;return interval end
 CancelDelayedAction=function() return true end
 ExecuteInGameThread=function(callback) callback() end
-Key={F6=117,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
+Key={F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
 '''
 
@@ -436,6 +437,60 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("worldName='MainMenu';gs.IsA=function() return false end")
         self.tick()
         self.assertIn('record_not_started',(self.data / 'status.txt').read_text())
+
+    def test_speed_cycles_only_during_actual_playback(self):
+        self.setup_input()
+        self.lua.execute('keybinds[Key.F7]()')
+        self.assertIsNone(self.lua.globals().worldSettings.DemoPlayTimeDilation)
+        self.lua.execute('replayPlaying=true;keybinds[Key.F7]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,2)
+        self.lua.execute('keybinds[Key.F7]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,4)
+        self.lua.execute('keybinds[Key.F7]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,0.5)
+
+    def test_speed_control_requires_matching_session_and_supported_value(self):
+        self.setup_input()
+        self.lua.execute("pc.SetViewTargetWithBlend=function() end; FindAllOf=function(cls) if cls=='PlayerController' then return controllers end;return {} end")
+        self.lua.execute('replayPlaying=true')
+        self.tick()
+        self.lua.execute('now=1004')
+        self.tick()
+        for request, expected in [('other\nspeed=4\n',1), ('session123\nspeed=3\n',1), ('session123\nspeed=0.5\n',0.5)]:
+            (self.data / 'control.txt').write_text(request)
+            self.tick()
+            self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,expected)
+
+    def setup_movement_actor(self):
+        self.lua.execute("""
+        movementChanges=0
+        world.AuthorityGameMode={IsValid=function() return true end}
+        unit={IsValid=function() return true end,
+          IsA=function(self,cls) return cls=='/Script/Tempest.TedPawn' end,
+          GetFullName=function() return 'TestUnit' end,GetWorld=function() return world end,
+          SetReplicateMovement=function(self,on) assert(on);movementChanges=movementChanges+1 end,
+          ForceNetUpdate=function() end}
+        """)
+
+    def test_standalone_unit_movement_is_enabled_once_for_recording(self):
+        self.setup_movement_actor()
+        self.start()
+        self.lua.execute('beginPost({get=function() return unit end});beginPost({get=function() return unit end})')
+        self.assertEqual(self.lua.globals().movementChanges,1)
+
+    def test_online_unit_replication_is_not_modified(self):
+        self.setup_movement_actor()
+        self.lua.execute('world.NetDriver={IsValid=function() return true end}')
+        self.start()
+        self.lua.execute('beginPost({get=function() return unit end})')
+        self.assertEqual(self.lua.globals().movementChanges,0)
+
+    def test_client_without_authority_does_not_change_movement_replication(self):
+        self.setup_movement_actor()
+        self.lua.execute('world.AuthorityGameMode=invalid')
+        self.start()
+        self.lua.execute('beginPost({get=function() return unit end})')
+        self.assertEqual(self.lua.globals().movementChanges,0)
 
 
 if __name__ == '__main__':

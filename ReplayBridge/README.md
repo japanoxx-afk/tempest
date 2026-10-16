@@ -11,3 +11,6 @@ A native replay of an offline skirmish on the installed Steam build 25752338 was
 Runtime diagnostics remain under %LOCALAPPDATA%\TempestReplayLauncher\bridge. Do not commit dumps, account logs, game assets or replay contents. Development harnesses are not part of this bridge.
 
 Viewer controls: mouse edge panning, native minimap click navigation, I to toggle the top-left statistics panel, C to toggle following the selected pawn, F6 to switch player bases, F8 to pause. Manual camera movement or another click cancels following. The game-owned TedSpectator pawn is the view target so native selection and minimap navigation use the same camera. Full minimap eligibility is enabled only during replay playback.
+
+
+v0.3.5: LockAlways confines the mouse while the replay window has focus. F7 cycles 1/2/4/0.5 playback rates through WorldSettings.DemoPlayTimeDilation; launcher requests are session-scoped and allow only those rates. Offline authoritative recording additionally enables ReplicateMovement on non-structure TedPawn actors, initially and after spawn. This build otherwise uses custom unit movement replication which was missing from the earlier demo. Networked worlds and non-authoritative clients are excluded. Old files without movement cannot be repaired by this change.

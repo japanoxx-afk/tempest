@@ -19,14 +19,14 @@ $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
  <StackPanel Grid.Row="1" Margin="0,18,0,8"><TextBlock Text="게임 설치 폴더"/><DockPanel><Button Name="BrowseGame" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="GamePath"/></DockPanel><TextBlock Text="리플레이 폴더"/><DockPanel><Button Name="BrowseReplay" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="ReplayPath"/></DockPanel></StackPanel>
  <TextBlock Grid.Row="2" Text="리플레이 라이브러리 · .replay" FontSize="18" Margin="4,6"/>
  <ListView Grid.Row="3" Name="ReplayList" Background="#1B2935" Foreground="White" Margin="4"><ListView.View><GridView><GridViewColumn Header="파일" DisplayMemberBinding="{Binding Name}" Width="380"/><GridViewColumn Header="수정 시간" DisplayMemberBinding="{Binding LastWriteTime}" Width="200"/><GridViewColumn Header="바이트" DisplayMemberBinding="{Binding Length}" Width="100"/></GridView></ListView.View></ListView>
- <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 (실험 모드 필요 · 오프라인 검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="실험적 관전자 리플레이 재생 허용 (오프라인 검증)"/><Button Name="Play" Content="선택 리플레이 관전자 재생" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 기능: 오프라인 스커미시 검증 · 온라인 미검증 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
+ <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 (실험 모드 필요 · 오프라인 검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="실험적 관전자 리플레이 재생 허용 (오프라인 검증)"/><Button Name="Play" Content="선택 리플레이 관전자 재생" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 기능: 오프라인 스커미시 검증 · 온라인 미검증 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F7 배속 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Text="재생 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="배속 적용"/></WrapPanel><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
  <TextBlock Grid.Row="5" Name="Status" TextWrapping="Wrap" Margin="4,12,4,0" Foreground="#A8B7C5"/>
  </Grid>
 </Window>
 '@
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $ui = @{}
-@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Experimental','Play','Status','AutoRecord','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
+@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Experimental','Play','Status','AutoRecord','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $ui.Version.Text = "Replay Launcher v$version"
 $ui.GamePath.Text = $settings.game
 $ui.ReplayPath.Text = $settings.replays
@@ -77,6 +77,7 @@ $ui.Open.Add_Click({ try { Save-Paths; New-Item -ItemType Directory -Path $setti
 $script:bridgeSession=$null
 $script:bridgeStarted=$null
 function Begin-Bridge($mode,$name='') {
+ $script:bridgeMode=$mode
  $script:bridgeSession=Start-BridgeSession $settings.game $mode $name
  $script:bridgeStarted=Get-Date
  $ui.BridgeStatus.Text='게임 브리지 응답 대기 중… 아직 녹화되지 않았습니다.'
@@ -119,7 +120,7 @@ $ui.Import.Add_Click({
  } catch { Show-Error $_ }
 })
 $ui.Experimental.Add_Click({ $ui.Play.IsEnabled = [bool]$ui.Experimental.IsChecked })
-$ui.Play.Add_Click({
+function Start-SelectedReplay {
  try {
   Save-Paths; $replay = $ui.ReplayList.SelectedItem
   if (-not $replay) { throw '재생할 파일을 선택하세요.' }
@@ -131,6 +132,27 @@ $ui.Play.Add_Click({
   if (-not (Test-Path -LiteralPath (Join-Path $settings.game 'Tempest.exe'))) { throw '게임 경로를 확인하세요.' }
   Begin-Bridge 'play' $name
   $ui.Status.Text = '리플레이를 불러옵니다. 검증 범위: 오프라인 스커미시 / 관전자 HUD·본진·건설 장면.'
+ } catch { Show-Error $_ }
+}
+$ui.Play.Add_Click({ Start-SelectedReplay })
+$ui.ReplayList.Add_MouseDoubleClick({
+ param($sender,$eventArgs)
+ $item=[Windows.Controls.ItemsControl]::ContainerFromElement($ui.ReplayList,$eventArgs.OriginalSource)
+ if ($item -is [Windows.Controls.ListViewItem]) {
+  $ui.Experimental.IsChecked=$true; $ui.Play.IsEnabled=$true
+  Start-SelectedReplay
+  $eventArgs.Handled=$true
+ }
+})
+$ui.ApplySpeed.Add_Click({
+ try {
+  if (-not $script:bridgeSession -or $script:bridgeMode -ne 'play') { throw '리플레이를 먼저 실행하세요. 게임에서는 F7로 배속을 전환할 수 있습니다.' }
+  $speed=[string]$ui.PlaybackSpeed.SelectedItem.Tag
+  if ($speed -notin @('0.5','1','2','4')) { throw '지원하지 않는 배속입니다.' }
+  $p=Get-BridgePaths $settings.game
+  [IO.File]::WriteAllText((Join-Path $p.Data 'control.tmp'),"$script:bridgeSession`nspeed=$speed`n")
+  Move-Item -LiteralPath (Join-Path $p.Data 'control.tmp') -Destination (Join-Path $p.Data 'control.txt') -Force
+  $ui.Status.Text="재생 속도 $($speed)x 적용 요청 · 게임 응답은 브리지 상태에서 확인하세요."
  } catch { Show-Error $_ }
 })
 $ui.Update.Add_Click({

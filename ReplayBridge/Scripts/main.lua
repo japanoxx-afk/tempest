@@ -140,6 +140,28 @@ local function prepareSpectator()
         if not ok then status('spectator_setup_error', tostring(err)) end
     end)
 end
+local movementConfigured = {}
+local function captureMovement(actor)
+    if mode ~= 'record' or not valid(actor) or not actor:IsA('/Script/Tempest.TedPawn') or actor:IsA('/Script/Tempest.TedStructureBase') then return false end
+    local name=actor:GetFullName()
+    if name:find('Conformation') or name:find('Ghost') or name:find('FoWHighlight') then return false end
+    local world=actor:GetWorld()
+    -- Changing replicated actor movement must not alter an online match.
+    -- Only standalone authority worlds may opt into native demo transforms.
+    if not valid(world) or not valid(world.AuthorityGameMode) or valid(member(world,'NetDriver')) then return false end
+    if not movementConfigured[name] then
+        actor:SetReplicateMovement(true)
+        actor:ForceNetUpdate()
+        movementConfigured[name]=true
+    end
+    return true
+end
+if mode == 'record' then
+    RegisterBeginPlayPostHook(function(context)
+        local ok,err=pcall(function() captureMovement(context:get()) end)
+        if not ok then status('movement_record_error',tostring(err)) end
+    end)
+end
 status('loaded', mode .. ' bridge loaded; runtime compatibility not yet verified')
 -- Reuse a stable game-thread timer. Creating Lua coroutine callbacks from an
 -- async loop every 33 ms stresses UE4SS's shared Lua registry/collector.
@@ -156,6 +178,17 @@ local viewerInitialized = false
 local viewerActors = {}
 local cameraIndex = 1
 local followTarget
+local viewerSpeed, appliedSpeed = 1, nil
+local speeds = {0.5,1,2,4}
+local function setViewerSpeed(pc,value)
+    local allowed=false
+    for _,speed in ipairs(speeds) do if value==speed then allowed=true end end
+    if not allowed then return end
+    viewerSpeed=value
+    pc:GetWorld():K2_GetWorldSettings().DemoPlayTimeDilation=value
+    appliedSpeed=value
+    status('viewer_speed',tostring(value)..'x')
+end
 local inputController
 local configuredWidgets = {}
 local viewerControllerName
@@ -202,7 +235,7 @@ local function configureViewer(pc)
 
     local input = StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
     if valid(input) and inputController ~= pc:GetFullName() then
-        input:SetInputMode_GameAndUIEx(pc,nil,0,false,false)
+        input:SetInputMode_GameAndUIEx(pc,nil,2,false,false) -- LockAlways; Alt+Tab releases focus
         inputController = pc:GetFullName()
     end
     liveWidgets('TedThirdPartySpectatorHud',function(widget)
@@ -281,6 +314,11 @@ if mode == 'play' then
             status('viewer_tracking','Camera tracking off')
         end
     end)
+    bind(Key.F7,function(pc)
+        local index=2
+        for i,speed in ipairs(speeds) do if speed==viewerSpeed then index=i end end
+        setViewerSpeed(pc,speeds[index % #speeds + 1])
+    end)
     bind(Key.F8,function(pc) command(pc,'demopause') end)
     local inputPending, inputErrors, mouseWasDown = false, 0, false
     gameLoop(33,function()
@@ -327,6 +365,16 @@ end
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
 local waitingWorld, waitingDetail, waitingNotice, attemptedWorld
+gameLoop(100,function()
+    if mode ~= 'record' then return true end
+    if recordingWorld then
+        local ok,err=pcall(function()
+            for _,actor in ipairs(FindAllOf('TedPawn') or {}) do captureMovement(actor) end
+        end)
+        if not ok then status('movement_record_error',tostring(err));return true end
+    end
+    return false
+end)
 local pending = false
 local errors = 0
 gameLoop(1000, function()
@@ -349,6 +397,11 @@ gameLoop(1000, function()
             if control then
                 os.remove(home .. 'control.txt')
                 control = control:gsub('\r\n','\n')
+                local speed = control:match('^'..session..'\nspeed=([%d.]+)\n$')
+                if mode == 'play' and speed then
+                    local value=tonumber(speed)
+                    for _,allowed in ipairs(speeds) do if value==allowed then viewerSpeed=value;appliedSpeed=nil end end
+                end
                 if control == session .. '\nstop\n' then
                     command(pc,'demostop')
                     status('stop_requested','Requested replay/recording stop')
@@ -443,6 +496,7 @@ gameLoop(1000, function()
                     end
                     if isPlaying then
                         configureViewer(pc)
+                        if appliedSpeed ~= viewerSpeed then setViewerSpeed(pc,viewerSpeed) end
                         -- A recorded pause references the original player's state. It can
                         -- otherwise suspend demo delivery forever, including its own unpause.
                         -- Preserve a pause requested by the new local replay spectator.
@@ -522,6 +576,7 @@ gameLoop(1000, function()
                     ensureReplayDriver(); diagnostics()
                     recordingIndex = recordingIndex + 1
                     local name = 'Tempest_' .. os.date('%Y%m%d_%H%M%S') .. '_' .. session:sub(1,8) .. '_' .. recordingIndex
+                    for _,actor in ipairs(FindAllOf('TedPawn') or {}) do captureMovement(actor) end
                     local output = command(pc, 'demorec ' .. name)
                     attemptedWorld = key
                     recordingWorld = key
