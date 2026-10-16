@@ -39,7 +39,7 @@ Save-Paths
 if(-not (Get-Content $configFile -Raw | ConvertFrom-Json).autoRecord){throw 'Enabled automatic recording was not saved'}
 $ui.AutoRecord.IsChecked=$false
 Save-Paths
-if((Get-Content $configFile -Raw | ConvertFrom-Json).autoRecord){throw 'Disabled automatic recording was not saved'}
+if(-not (Get-Content $configFile -Raw | ConvertFrom-Json).autoRecord){throw 'Automatic recording must stay enabled regardless of legacy checkbox state'}
 'PASS: library refresh, selection, file growth/results and automatic recording preference persistence'
 
 $importSource=Join-Path $folder 'source'

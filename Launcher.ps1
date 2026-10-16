@@ -9,7 +9,7 @@ $data = Join-Path $env:LOCALAPPDATA 'TempestReplayLauncher'
 New-Item $data -ItemType Directory -Force | Out-Null
 $configFile = Join-Path $data 'settings.json'
 $settings = @{ autoRecord = $true; game = 'C:\Program Files (x86)\Steam\steamapps\common\Tempest Rising'; replays = (Join-Path $env:LOCALAPPDATA 'Tempest\Saved\Demos') }
-if (Test-Path $configFile) { try { $c = Get-Content $configFile -Raw | ConvertFrom-Json; $settings.game = $c.game; $settings.replays = $c.replays; if ($c.autoRecord -is [bool]) { $settings.autoRecord = $c.autoRecord } } catch {} }
+if (Test-Path $configFile) { try { $c = Get-Content $configFile -Raw | ConvertFrom-Json; $settings.game = $c.game; $settings.replays = $c.replays } catch {} }
 $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json).version
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="TEMPEST · Replay Launcher" Width="960" Height="800" MinWidth="900" MinHeight="760" Background="#101820" Foreground="#E6EDF3" WindowStartupLocation="CenterScreen">
@@ -19,22 +19,21 @@ $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
  <StackPanel Grid.Row="1" Margin="0,18,0,8"><TextBlock Text="게임 설치 폴더"/><DockPanel><Button Name="BrowseGame" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="GamePath"/></DockPanel><TextBlock Text="리플레이 폴더"/><DockPanel><Button Name="BrowseReplay" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="ReplayPath"/></DockPanel></StackPanel>
  <TextBlock Grid.Row="2" Text="리플레이 라이브러리 · .replay" FontSize="18" Margin="4,6"/>
  <ListView Grid.Row="3" Name="ReplayList" Background="#1B2935" Foreground="White" Margin="4"><ListView.View><GridView><GridViewColumn Header="파일" DisplayMemberBinding="{Binding Name}" Width="380"/><GridViewColumn Header="수정 시간" DisplayMemberBinding="{Binding LastWriteTime}" Width="200"/><GridViewColumn Header="바이트" DisplayMemberBinding="{Binding Length}" Width="100"/></GridView></ListView.View></ListView>
- <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 (실험 모드 필요 · 오프라인 검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="실험적 관전자 리플레이 재생 허용 (오프라인 검증)"/><Button Name="Play" Content="선택 리플레이 관전자 재생" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 기능: 오프라인 스커미시 검증 · 온라인 미검증 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F7 배속 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Text="재생 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="배속 적용"/></WrapPanel><TextBlock Name="MovementStatus" TextWrapping="Wrap" Margin="4" Foreground="#B9E873"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
+ <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="게임 실행 · 자동 녹화"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="녹화·재생 모드 설치"/><Button Name="RemoveBridge" Content="녹화·재생 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><TextBlock Text="자동 녹화 · 관전자 재생 기본 적용 (녹화·재생 모드 설치 필요)" Margin="4,8" Foreground="#B9E873"/><Button Name="Play" Content="선택 리플레이 관전자 재생" HorizontalAlignment="Left"/><TextBlock Text="검증: 오프라인·LAN AI 경기 / 인터넷 상대 경기 확인 필요 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F7 배속 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Text="재생 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="배속 적용"/></WrapPanel><TextBlock Name="MovementStatus" TextWrapping="Wrap" Margin="4" Foreground="#B9E873"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
  <TextBlock Grid.Row="5" Name="Status" TextWrapping="Wrap" Margin="4,12,4,0" Foreground="#A8B7C5"/>
  </Grid>
 </Window>
 '@
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $ui = @{}
-@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Experimental','Play','Status','AutoRecord','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
+@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Play','Status','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $ui.Version.Text = "Replay Launcher v$version"
 $ui.GamePath.Text = $settings.game
 $ui.ReplayPath.Text = $settings.replays
-$ui.AutoRecord.IsChecked = $settings.autoRecord
 function Show-Error($e) { $ui.Status.Text = $e.Exception.Message }
 function Save-Paths {
  if (-not [IO.Path]::IsPathRooted($ui.GamePath.Text) -or -not [IO.Path]::IsPathRooted($ui.ReplayPath.Text)) { throw '절대 경로를 입력하세요.' }
- $settings.game = $ui.GamePath.Text; $settings.replays = $ui.ReplayPath.Text; $settings.autoRecord = [bool]$ui.AutoRecord.IsChecked
+ $settings.game = $ui.GamePath.Text; $settings.replays = $ui.ReplayPath.Text; $settings.autoRecord = $true
  $settings | ConvertTo-Json | Set-Content $configFile -Encoding UTF8
 }
 $script:librarySignature=$null
@@ -69,7 +68,6 @@ function Browse-Path($target) {
  if ($dialog.ShowDialog() -eq 'OK') { $target.Text = $dialog.SelectedPath }
  $dialog.Dispose()
 }
-$ui.AutoRecord.Add_Click({ try { Save-Paths } catch { Show-Error $_ } })
 $ui.BrowseGame.Add_Click({ Browse-Path $ui.GamePath })
 $ui.BrowseReplay.Add_Click({ Browse-Path $ui.ReplayPath })
 $ui.Refresh.Add_Click({ try { Refresh-Replays } catch { Show-Error $_ } })
@@ -82,8 +80,8 @@ function Begin-Bridge($mode,$name='') {
  $script:bridgeStarted=Get-Date
  $ui.BridgeStatus.Text='게임 브리지 응답 대기 중… 아직 녹화되지 않았습니다.'
 }
-$ui.Launch.Add_Click({ try { Save-Paths; if (-not (Test-Path -LiteralPath (Join-Path $settings.game 'Tempest.exe'))) { throw 'Tempest.exe를 찾을 수 없습니다.' }; if ($ui.AutoRecord.IsChecked) { Begin-Bridge 'record' } else { Start-Process 'steam://rungameid/1486920' }; $ui.Status.Text = 'Steam에 게임 실행을 요청했습니다.' } catch { Show-Error $_ } })
-$ui.InstallBridge.Add_Click({ try { Save-Paths; $ui.InstallBridge.IsEnabled=$false; Install-ReplayBridge $settings.game; $ui.Status.Text='실험 모드 설치 완료. 호환성 진단으로 먼저 테스트하세요.' } catch { Show-Error $_ } finally { $ui.InstallBridge.IsEnabled=$true } })
+$ui.Launch.Add_Click({ try { Save-Paths; if (-not (Test-Path -LiteralPath (Join-Path $settings.game 'Tempest.exe'))) { throw 'Tempest.exe를 찾을 수 없습니다.' }; Begin-Bridge 'record'; $ui.Status.Text = 'Steam에 게임 실행을 요청했습니다.' } catch { Show-Error $_ } })
+$ui.InstallBridge.Add_Click({ try { Save-Paths; $ui.InstallBridge.IsEnabled=$false; Install-ReplayBridge $settings.game; $ui.Status.Text='녹화·재생 모드 설치 완료. 게임 실행 버튼을 누르면 경기 시작 시 자동 녹화를 시도합니다.' } catch { Show-Error $_ } finally { $ui.InstallBridge.IsEnabled=$true } })
 $ui.RemoveBridge.Add_Click({ try { Save-Paths; Remove-ReplayBridge $settings.game; $ui.Status.Text='모드를 백업 폴더로 이동해 비활성화했습니다.' } catch { Show-Error $_ } })
 $ui.Probe.Add_Click({ try { Save-Paths; Begin-Bridge 'probe' } catch { Show-Error $_ } })
 $ui.Diagnostics.Add_Click({ try { $p=Get-BridgePaths $settings.game; New-Item $p.Data -ItemType Directory -Force | Out-Null; Start-Process explorer.exe -ArgumentList ('"'+$p.Data+'"') } catch { Show-Error $_ } })
@@ -137,7 +135,6 @@ $ui.Import.Add_Click({
   }; $dialog.Dispose()
  } catch { Show-Error $_ }
 })
-$ui.Experimental.Add_Click({ $ui.Play.IsEnabled = [bool]$ui.Experimental.IsChecked })
 function Start-SelectedReplay {
  try {
   Save-Paths; $replay = $ui.ReplayList.SelectedItem
@@ -157,7 +154,6 @@ $ui.ReplayList.Add_MouseDoubleClick({
  param($sender,$eventArgs)
  $item=[Windows.Controls.ItemsControl]::ContainerFromElement($ui.ReplayList,$eventArgs.OriginalSource)
  if ($item -is [Windows.Controls.ListViewItem]) {
-  $ui.Experimental.IsChecked=$true; $ui.Play.IsEnabled=$true
   Start-SelectedReplay
   $eventArgs.Handled=$true
  }
