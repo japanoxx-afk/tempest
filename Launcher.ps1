@@ -19,14 +19,14 @@ $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
  <StackPanel Grid.Row="1" Margin="0,18,0,8"><TextBlock Text="게임 설치 폴더"/><DockPanel><Button Name="BrowseGame" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="GamePath"/></DockPanel><TextBlock Text="리플레이 폴더"/><DockPanel><Button Name="BrowseReplay" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="ReplayPath"/></DockPanel></StackPanel>
  <TextBlock Grid.Row="2" Text="리플레이 라이브러리 · .replay" FontSize="18" Margin="4,6"/>
  <ListView Grid.Row="3" Name="ReplayList" Background="#1B2935" Foreground="White" Margin="4"><ListView.View><GridView><GridViewColumn Header="파일" DisplayMemberBinding="{Binding Name}" Width="380"/><GridViewColumn Header="수정 시간" DisplayMemberBinding="{Binding LastWriteTime}" Width="200"/><GridViewColumn Header="바이트" DisplayMemberBinding="{Binding Length}" Width="100"/></GridView></ListView.View></ListView>
- <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 (실험 모드 필요 · 오프라인 검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="실험적 관전자 리플레이 재생 허용 (오프라인 검증)"/><Button Name="Play" Content="선택 리플레이 관전자 재생" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 기능: 오프라인 스커미시 검증 · 온라인 미검증 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F7 배속 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Text="재생 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="배속 적용"/></WrapPanel><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
+ <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="Steam 게임 실행"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="실험 모드 설치"/><Button Name="RemoveBridge" Content="실험 모드 제거"/><Button Name="Probe" Content="호환성 진단 실행"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><CheckBox Foreground="White" Name="AutoRecord" Margin="5,8" Content="게임 실행 시 경기 자동 기록 (실험 모드 필요 · 오프라인 검증)"/><CheckBox Foreground="White" Name="Experimental" Margin="5,8" Content="실험적 관전자 리플레이 재생 허용 (오프라인 검증)"/><Button Name="Play" Content="선택 리플레이 관전자 재생" IsEnabled="False" HorizontalAlignment="Left"/><TextBlock Text="실험 기능: 오프라인 스커미시 검증 · 온라인 미검증 · 시간 탐색 미지원 · 마우스 가장자리·미니맵 이동 / I 자원 UI / C 선택 대상 추적 / F6 본진 / F7 배속 / F8 일시정지" TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Text="재생 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="배속 적용"/></WrapPanel><TextBlock Name="MovementStatus" TextWrapping="Wrap" Margin="4" Foreground="#B9E873"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
  <TextBlock Grid.Row="5" Name="Status" TextWrapping="Wrap" Margin="4,12,4,0" Foreground="#A8B7C5"/>
  </Grid>
 </Window>
 '@
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $ui = @{}
-@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Experimental','Play','Status','AutoRecord','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed') | ForEach-Object { $ui[$_] = $window.FindName($_) }
+@('Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Experimental','Play','Status','AutoRecord','InstallBridge','RemoveBridge','Probe','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $ui.Version.Text = "Replay Launcher v$version"
 $ui.GamePath.Text = $settings.game
 $ui.ReplayPath.Text = $settings.replays
@@ -93,10 +93,18 @@ $timer.Add_Tick({
  try {
   Sync-ReplayLibrary
   if (-not $script:bridgeSession) { return }
-  $p=Get-BridgePaths $settings.game; $statusFile=Join-Path $p.Data 'status.txt'
+  $p=Get-BridgePaths $settings.game
+  $movementFile=Join-Path $p.Data 'movement-state.txt'
+  $movement=@(if (Test-Path -LiteralPath $movementFile) { Get-Content -LiteralPath $movementFile -Encoding UTF8 })
+  $ui.MovementStatus.Text=''
+  if ($movement.Count -ge 5 -and $movement[0] -eq $script:bridgeSession -and $movement[2] -in @('recording','playing','completed')) {
+   $action=if ($movement[2] -eq 'recording') {'기록'} elseif ($movement[2] -eq 'completed') {'기록 완료'} else {'재생'}
+   $ui.MovementStatus.Text="유닛 이동 $action · $($movement[3]) · $($movement[4]) · $($movement[1]).movement"
+  }
+  $statusFile=Join-Path $p.Data 'status.txt'
   $lines=@(if (Test-Path $statusFile) { Get-Content $statusFile -Encoding UTF8 })
   if ($lines.Count -ge 4 -and $lines[0] -eq $script:bridgeSession) {
-   $labels=@{record_waiting='녹화 미시작 · 경기 시작 판정 대기';record_not_started='이 경기 녹화 안 됨 · 시작 판정 확인 필요';record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료';viewer_initializing='관전자 HUD·카메라 연결됨';play_requested='리플레이 로딩 요청'}
+   $labels=@{record_waiting='녹화 미시작 · 경기 시작 판정 대기';record_not_started='이 경기 녹화 안 됨 · 시작 판정 확인 필요';record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료';viewer_initializing='관전자 HUD·카메라 연결됨';play_requested='리플레이 로딩 요청';movement_recording='유닛 이동 보조 기록 중';movement_playback='유닛 이동 보조 파일 재생 중';movement_missing='이동 보조 파일 없음 · 기본 재생';movement_error='유닛 이동 보조 기록/재생 오류'}
    $label=if ($labels.ContainsKey($lines[2])) { $labels[$lines[2]] } else { $lines[2] }
    $ui.BridgeStatus.Text="브리지: $label · $($lines[3])"
    if ($lines[2] -in @('record_requested','record_driver_active','record_session_left')) {
@@ -108,14 +116,24 @@ $timer.Add_Tick({
 })
 $timer.Start()
 $window.Add_Closed({ $timer.Stop() })
+function Import-ReplayFiles([string]$Source,[string]$Folder) {
+ $destination=Join-Path $Folder ([IO.Path]::GetFileName($Source))
+ $companion=[IO.Path]::ChangeExtension($Source,'.movement')
+ $targetCompanion=[IO.Path]::ChangeExtension($destination,'.movement')
+ if ((Test-Path -LiteralPath $destination) -or (Test-Path -LiteralPath $targetCompanion)) { throw '같은 이름의 리플레이 또는 이동 파일이 이미 있습니다. 원본을 유지합니다.' }
+ New-Item -ItemType Directory -Path $Folder -Force | Out-Null
+ [IO.File]::Copy($Source,$destination,$false)
+ if (Test-Path -LiteralPath $companion -PathType Leaf) {
+  try { [IO.File]::Copy($companion,$targetCompanion,$false) }
+  catch { Remove-Item -LiteralPath $destination;throw }
+ }
+ return $destination
+}
 $ui.Import.Add_Click({
  try {
   Save-Paths; $dialog = New-Object Windows.Forms.OpenFileDialog; $dialog.Filter = 'Unreal replay (*.replay)|*.replay'
   if ($dialog.ShowDialog() -eq 'OK') {
-   New-Item -ItemType Directory -Path $settings.replays -Force | Out-Null
-   $destination = Join-Path $settings.replays ([IO.Path]::GetFileName($dialog.FileName))
-   if (Test-Path -LiteralPath $destination) { throw '같은 이름의 파일이 이미 있습니다. 원본을 유지합니다.' }
-   Copy-Item -LiteralPath $dialog.FileName -Destination $destination; Refresh-Replays
+   Import-ReplayFiles $dialog.FileName $settings.replays | Out-Null; Refresh-Replays
   }; $dialog.Dispose()
  } catch { Show-Error $_ }
 })

@@ -3,7 +3,7 @@ $source=Join-Path (Split-Path $PSScriptRoot -Parent) 'Launcher.ps1'
 $tokens=$null;$parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count){throw ($parseErrors | Out-String)}
-$names=@('Sync-ReplayLibrary','Get-RecordingFileMessage','Save-Paths')
+$names=@('Sync-ReplayLibrary','Get-RecordingFileMessage','Save-Paths','Import-ReplayFiles')
 foreach($fn in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $names},$true)) { . ([ScriptBlock]::Create($fn.Extent.Text)) }
 $folder=Join-Path (Split-Path $PSScriptRoot -Parent) ('dist\library-test-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $folder | Out-Null
@@ -41,3 +41,20 @@ $ui.AutoRecord.IsChecked=$false
 Save-Paths
 if((Get-Content $configFile -Raw | ConvertFrom-Json).autoRecord){throw 'Disabled automatic recording was not saved'}
 'PASS: library refresh, selection, file growth/results and automatic recording preference persistence'
+
+$importSource=Join-Path $folder 'source'
+$importTarget=Join-Path $folder 'target'
+New-Item -ItemType Directory -Path $importSource,$importTarget | Out-Null
+$sourceReplay=Join-Path $importSource 'Companion.replay'
+[IO.File]::WriteAllBytes($sourceReplay,[byte[]](1,2,3))
+[IO.File]::WriteAllText((Join-Path $importSource 'Companion.movement'),'movement test')
+Import-ReplayFiles $sourceReplay $importTarget | Out-Null
+if (([IO.File]::ReadAllText((Join-Path $importTarget 'Companion.movement'))) -ne 'movement test') {throw 'Movement companion was not imported'}
+$rejected=$false
+try {Import-ReplayFiles $sourceReplay $importTarget | Out-Null} catch {$rejected=$true}
+if (-not $rejected) {throw 'Existing replay pair was overwritten'}
+$legacySource=Join-Path $importSource 'Legacy.replay'
+[IO.File]::WriteAllBytes($legacySource,[byte[]](4,5))
+Import-ReplayFiles $legacySource $importTarget | Out-Null
+if ((Get-Item (Join-Path $importTarget 'Legacy.replay')).Length -ne 2) {throw 'Legacy replay without a companion cannot be imported'}
+'PASS: companion import, existing pair protection and legacy import'

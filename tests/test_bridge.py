@@ -68,6 +68,8 @@ class BridgeTests(unittest.TestCase):
         self.lua = LuaRuntime(unpack_returned_tuples=True)
         self.lua.globals().testRoot = self.root.as_posix()
         self.lua.execute(MOCK)
+        module=(pathlib.Path(__file__).parents[1] / 'ReplayBridge/Scripts/Movement.lua').read_text()
+        self.lua.execute('package.preload.Movement=function()\n'+module+'\nend')
 
     def tearDown(self):
         self.temp.cleanup()
@@ -491,6 +493,111 @@ class BridgeTests(unittest.TestCase):
         self.start()
         self.lua.execute('beginPost({get=function() return unit end})')
         self.assertEqual(self.lua.globals().movementChanges,0)
+
+    def setup_online_companion(self):
+        (self.root / 'Tempest/Saved/Demos').mkdir(parents=True)
+        self.setup_movement_actor()
+        self.lua.execute("""
+        world.NetDriver={IsValid=function() return true end};world.AuthorityGameMode=invalid
+        PropertyTypes={IntProperty=1};aliasCalls=0
+        RegisterCustomProperty=function(info) assert(info.OffsetInternal.Property=='EntityHandle');aliasCalls=aliasCalls+1 end
+        local oldFind=StaticFindObject
+        StaticFindObject=function(path)
+          if path=='/Script/NubECS.EcsActorComponent' then return {
+            IsValid=function() return true end,ForEachProperty=function(self,cb) cb({
+              GetFName=function() return FName('EntityHandle') end,
+              GetStruct=function() return {GetFullName=function() return 'ScriptStruct /Script/NubECS.EcsEntityHandle' end} end}) end} end
+          return oldFind(path)
+        end
+        unit.EcsActor={IsValid=function() return true end,TempestReplayEntityKey=2076}
+        unit.GetClass=function() return {GetFName=function() return FName('Tank_C') end} end
+        unit.GetOwningPlayerID=function() return 1 end
+        unit.IsAlive=function() return true end;unit.IsInContainer=function() return false end
+        unit.K2_GetActorLocation=function() return {X=unitX or 10,Y=20,Z=30} end
+        unit.K2_GetActorRotation=function() return {Pitch=0,Yaw=0,Roll=0} end
+        unit.K2_SetActorLocation=function(self,pos) unitX=pos.X;locationWrites=(locationWrites or 0)+1 end
+        unit.K2_SetActorRotation=function() end
+        unit.K2_SetDefaultVisibility=function() end;unit.K2_OnVisibilityChanged=function() end
+        unit.SetActorHiddenInGame=function(self,hidden) unitHidden=hidden end
+        FindAllOf=function(cls) if cls=='PlayerController' then return controllers elseif cls=='TedPawn' then return {unit} end;return {} end
+        replayTime=0;replayPlaying=false;isRecording=true
+        replaySystem={IsValid=function() return true end,IsPlaying=function() return replayPlaying end,
+          IsRecording=function() return isRecording end,GetReplayCurrentTime=function() return replayTime end}
+        FindFirstOf=function(cls) if cls=='ReplaySubsystem' then return replaySystem end;return invalid end
+        """)
+
+    def test_online_client_records_local_positions_without_replication_or_location_writes(self):
+        self.setup_online_companion()
+        self.start();self.tick();self.lua.execute('began=true');self.tick()
+        self.lua.execute('loops[100]();replayTime=0.1;unitX=90;loops[100]()')
+        files=list((self.root / 'Tempest/Saved/Demos').glob('*.movement'))
+        self.assertEqual(len(files),1)
+        text=files[0].read_text()
+        self.assertIn('Tank_C\t1\t2076',text)
+        self.assertIn('90.000',text)
+        self.assertEqual(self.lua.globals().movementChanges,0)
+        self.assertIsNone(self.lua.globals().locationWrites)
+        self.assertEqual(self.lua.globals().aliasCalls,1)
+        self.lua.execute('ended=true');self.tick()
+        self.assertTrue(files[0].read_text().endswith('E\n'))
+        self.assertIn('completed',(self.data / 'movement-state.txt').read_text())
+        self.lua.execute('isRecording=false;loops[100]()')
+        self.assertTrue(files[0].read_text().endswith('E\n'))
+
+    def test_network_structure_presence_is_recorded_without_changing_replication(self):
+        self.setup_online_companion()
+        self.lua.execute("unit.IsA=function(self,cls) return cls=='/Script/Tempest.TedPawn' or cls=='/Script/Tempest.TedStructureBase' end")
+        self.start();self.tick();self.lua.execute('began=true');self.tick();self.lua.execute('loops[100]()')
+        files=list((self.root / 'Tempest/Saved/Demos').glob('*.movement'))
+        self.assertEqual(len(files),1)
+        self.assertIn('Tank_C',files[0].read_text())
+        self.assertEqual(self.lua.globals().movementChanges,0)
+        self.lua.execute('isRecording=false;loops[100]()')
+
+    def test_online_companion_does_not_start_without_native_recording(self):
+        self.setup_online_companion()
+        self.start();self.tick();self.lua.execute('began=true;isRecording=false');self.tick()
+        self.lua.execute('loops[100]()')
+        self.assertEqual(list((self.root / 'Tempest/Saved/Demos').glob('*.movement')),[])
+
+    def test_online_companion_applies_only_during_actual_playback(self):
+        self.setup_input()
+        self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t123\t20\t30\t0\t0\t0\nE\n')
+        # setup_input already started play mode; its input callback sees the newly provided native mocks.
+        self.lua.execute('loops[33]()')
+        self.assertIsNone(self.lua.globals().locationWrites)
+        self.lua.execute('replayPlaying=true;loops[33]()')
+        self.assertEqual(self.lua.globals().unitX,123)
+        self.assertEqual(self.lua.globals().movementChanges,0)
+
+    def test_recorded_alive_presence_overrides_incomplete_client_demo_health(self):
+        self.setup_input();self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t123\t20\t30\t0\t0\t0\nF\t1\nE\n')
+        self.lua.execute('unit.IsAlive=function() return false end;replayPlaying=true;loops[33]()')
+        self.assertEqual(self.lua.globals().unitX,123)
+        self.assertFalse(self.lua.globals().unitHidden)
+        self.lua.execute('replayTime=1;loops[33]()')
+        self.assertTrue(self.lua.globals().unitHidden)
+
+    def test_companion_opened_before_first_world_status_survives_world_ready(self):
+        self.setup_input();self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t20\t30\t0\t0\t0\nF\t1\nP\t1\t100\t20\t30\t0\t0\t0\nF\t2\nP\t1\t200\t20\t30\t0\t0\t0\nE\n')
+        self.lua.execute('replayPlaying=true;loops[33]()')
+        self.tick()
+        self.lua.execute('replayTime=0.5;loops[33]()')
+        self.assertEqual(self.lua.globals().unitX,50)
+        self.lua.execute('replayTime=3;loops[33]()')
+
+    def test_duplicate_online_identity_disables_companion_instead_of_swapping_units(self):
+        self.setup_online_companion()
+        self.lua.execute("local oldFind=FindAllOf;FindAllOf=function(cls) if cls=='TedPawn' then return {unit,unit} end;return oldFind(cls) end")
+        self.start();self.tick();self.lua.execute('began=true');self.tick();self.lua.execute('loops[100]()')
+        self.assertIn('Duplicate ECS identity',(self.data / 'status.txt').read_text())
+        self.assertIsNone(self.lua.globals().locationWrites)
 
 
 if __name__ == '__main__':

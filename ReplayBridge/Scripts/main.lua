@@ -174,6 +174,121 @@ local function gameLoop(interval, callback)
     end)
 end
 local worldKey, recordingWorld, startedAt, playSent, prepared
+local movementIO={}
+do
+    local ok,module=pcall(require,'Movement')
+    if ok then movementIO.codec=module else status('movement_error','Movement module unavailable: '..tostring(module)) end
+end
+function movementIO:identity(actor)
+    if not self.codec or not valid(actor) or not actor:IsA('/Script/Tempest.TedPawn') then return nil end
+    local name=actor:GetFullName()
+    if name:find('Conformation') or name:find('Ghost') or name:find('FoWHighlight') then return nil end
+    local component=actor.EcsActor
+    if not valid(component) then return nil end
+    if not self.aliasReady then
+        local cls=StaticFindObject('/Script/NubECS.EcsActorComponent');local supported=false
+        if valid(cls) then cls:ForEachProperty(function(p)
+            if p:GetFName():ToString()=='EntityHandle' and p:GetStruct():GetFullName()=='ScriptStruct /Script/NubECS.EcsEntityHandle' then supported=true end
+        end) end
+        assert(supported,'Unsupported ECS EntityHandle layout')
+        -- Read-only alias at the reflected property's start, never a fixed process offset.
+        -- EntityHandle is replicated; object names/addresses are not stable across playback.
+        RegisterCustomProperty({Name='TempestReplayEntityKey',Type=PropertyTypes.IntProperty,
+            BelongsToClass='/Script/NubECS.EcsActorComponent',OffsetInternal={Property='EntityHandle',RelativeOffset=0}})
+        self.aliasReady=true
+    end
+    local class=actor:GetClass():GetFName():ToString()
+    local owner,entity=actor:GetOwningPlayerID(),component.TempestReplayEntityKey
+    return self.codec.key(class,owner,entity),class,owner,entity
+end
+function movementIO:close()
+    if self.writer then
+        self.writer:close();self.writer=nil
+        write(home..'movement-state.txt',session..'\n'..self.name..'\ncompleted\nframes='..(self.frames or 0)..'\nunits='..(self.units or 0))
+    end
+    if self.reader then self.reader:close();self.reader=nil end
+end
+function movementIO:record(subsystem,name,actors)
+    if not self.codec or self.failed then return end
+    if self.name~=name then
+        self:close();self.name=name;self.frames=0;self.units=0
+        local path=os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..name..'.movement'
+        self.writer=self.codec.writer(path,name)
+        status('movement_recording','Local received unit movement companion: '..path)
+    end
+    local units,seen={},{}
+    for _,actor in ipairs(actors) do
+        if valid(actor) and actor:IsAlive() and not actor:IsInContainer() then
+            local key,class,owner,entity=self:identity(actor)
+            if key then
+                assert(not seen[key],'Duplicate ECS identity; refusing ambiguous movement recording');seen[key]=true
+                units[#units+1]={class=class,owner=owner,entity=entity,position=actor:K2_GetActorLocation(),rotation=actor:K2_GetActorRotation()}
+            end
+        end
+    end
+    self.writer:frame(subsystem:GetReplayCurrentTime(),units)
+    self.frames=self.writer.frames;self.units=#units
+    if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
+end
+function movementIO:play(subsystem)
+    if not self.codec or self.failed then return end
+    if not self.opened then
+        self.opened=true
+        self.reader=self.codec.reader(os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..replay..'.movement',replay)
+        if self.reader then status('movement_playback','Applying received unit transforms from '..replay..'.movement')
+        else status('movement_missing','No movement companion; using native replay data only') end
+    end
+    if not self.reader then return end
+    local time=subsystem:GetReplayCurrentTime()
+    local samples=self.reader:at(time);local actors,duplicates={},{}
+    if not self.reader.following and self.reader.previous and time>self.reader.previous.time+0.5 then
+        self.visible={};self.absent={};self.applied=0;return
+    end
+    for _,actor in ipairs(FindAllOf('TedPawn') or {}) do
+        -- Client demos can restore zero/default health while a recorded unit was alive.
+        -- Presence in a full movement snapshot is the recorder's actual IsAlive result.
+        if valid(actor) and not actor:IsInContainer() then
+            local key=self:identity(actor)
+            if key then
+                if actors[key] then duplicates[key]=true end
+                actors[key]=actor
+            end
+        end
+    end
+    local applied,visible,absent=0,{},{}
+    self.managed=self.managed or {}
+    for key,sample in pairs(samples) do
+        local actor=actors[key]
+        if actor and not duplicates[key] then
+            local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
+            if not self.visible or not self.visible[name] then
+                actor:K2_SetDefaultVisibility(true,true)
+                actor:K2_OnVisibilityChanged(true)
+            end
+            actor:SetActorHiddenInGame(false)
+            actor:K2_SetActorLocation(sample.position,false,{},true)
+            actor:K2_SetActorRotation(sample.rotation,true)
+            applied=applied+1
+        end
+    end
+    for _,actor in pairs(actors) do
+        local name=actor:GetFullName()
+        if self.managed[name] and not visible[name] then absent[name]=true;actor:SetActorHiddenInGame(true) end
+    end
+    self.visible=visible
+    self.absent=absent
+    self.applied=applied
+end
+function movementIO:fail(err)
+    self:close();self.failed=true
+    write(home..'movement-state.txt',session..'\n'..(self.name or replay)..'\nerror\n'..tostring(err))
+    status('movement_error',tostring(err)..'; native replay continues without companion movement')
+end
+function movementIO:alive(actor)
+    local name=actor:GetFullName()
+    if self.absent and self.absent[name] then return false end
+    return (self.visible and self.visible[name]) or actor:IsAlive()
+end
 local viewerInitialized = false
 local viewerActors = {}
 local cameraIndex = 1
@@ -197,6 +312,7 @@ local function stopViewer(reason)
     viewerStopped = true
     followTarget = nil
     configuredWidgets = {}
+    movementIO:close()
     status('viewer_stopped',reason)
 end
 if mode == 'play' then
@@ -289,7 +405,7 @@ if mode == 'play' then
         local bases = {}
         for _, actor in ipairs(FindAllOf('TedStructureBase') or {}) do
             local name = actor:GetFullName()
-            if name:find('ConstructionYard_C_') and not name:find('Conformation') and not name:find('Ghost') and actor:IsAlive() then bases[#bases+1]=actor end
+            if name:find('ConstructionYard_C_') and not name:find('Conformation') and not name:find('Ghost') and movementIO:alive(actor) then bases[#bases+1]=actor end
         end
         table.sort(bases,function(a,b) return a:GetOwningPlayerID()<b:GetOwningPlayerID() end)
         if #bases == 0 then return end
@@ -306,7 +422,7 @@ if mode == 'play' then
         -- UE4SS returns selected array entries as RemoteUnrealParam wrappers.
         local unwrapped,value = pcall(function() return target:get() end)
         if unwrapped then target=value end
-        if valid(target) and target:IsAlive() and target ~= followTarget then
+        if valid(target) and movementIO:alive(target) and target ~= followTarget then
             followTarget = target
             status('viewer_tracking',target:GetFullName())
         else
@@ -330,6 +446,8 @@ if mode == 'play' then
             local ok,err = pcall(function()
                 local subsystem = FindFirstOf('ReplaySubsystem')
                 if not valid(subsystem) or not subsystem:IsPlaying() then followTarget=nil; return end
+                local movementOK,movementError=pcall(function() movementIO:play(subsystem) end)
+                if not movementOK then movementIO:fail(movementError) end
                 local pc = getLocalPlayerController()
                 if not valid(pc) or not valid(pc.Pawn) then followTarget=nil; return end
                 local down = pc:IsInputKeyDown({KeyName=FName('LeftMouseButton')})
@@ -349,7 +467,7 @@ if mode == 'play' then
                     local p=pc.Pawn:K2_GetActorLocation()
                     position={X=p.X+dx,Y=p.Y+dy,Z=p.Z}
                 elseif valid(followTarget) then
-                    if followTarget:IsAlive() then position=followTarget:K2_GetActorLocation() else followTarget=nil end
+                    if movementIO:alive(followTarget) then position=followTarget:K2_GetActorLocation() else followTarget=nil end
                 end
                 if position then
                     pc.Pawn:K2_SetActorLocation(position,false,{},true)
@@ -369,9 +487,15 @@ gameLoop(100,function()
     if mode ~= 'record' then return true end
     if recordingWorld then
         local ok,err=pcall(function()
-            for _,actor in ipairs(FindAllOf('TedPawn') or {}) do captureMovement(actor) end
+            local pc=getLocalPlayerController()
+            if not valid(pc) or pc:GetWorld():GetFullName()~=recordingWorld then movementIO:close();return end
+            local subsystem=FindFirstOf('ReplaySubsystem')
+            if not valid(subsystem) or not subsystem:IsRecording() then movementIO:close();return end
+            local actors=FindAllOf('TedPawn') or {}
+            for _,actor in ipairs(actors) do captureMovement(actor) end
+            movementIO:record(subsystem,recordingName,actors)
         end)
-        if not ok then status('movement_record_error',tostring(err));return true end
+        if not ok then movementIO:fail(err);return true end
     end
     return false
 end)
@@ -403,6 +527,7 @@ gameLoop(1000, function()
                     for _,allowed in ipairs(speeds) do if value==allowed then viewerSpeed=value;appliedSpeed=nil end end
                 end
                 if control == session .. '\nstop\n' then
+                    movementIO:close()
                     command(pc,'demostop')
                     status('stop_requested','Requested replay/recording stop')
                     return
@@ -412,6 +537,7 @@ gameLoop(1000, function()
             if not valid(world) then return end
             local key = world:GetFullName()
             if key ~= worldKey then
+                if mode=='record' then movementIO:close() end
                 local missed = mode == 'record' and waitingWorld ~= nil and waitingWorld == worldKey and attemptedWorld ~= worldKey
                 local missedDetail = waitingDetail
                 if recordingWorld then
@@ -448,6 +574,10 @@ gameLoop(1000, function()
                 inspect('configured_spectator_class', function() return gs.SpectatorClass:GetFullName() end)
                 inspect('replay_playing', function() return FindFirstOf('ReplaySubsystem'):IsPlaying() end)
                 inspect('replay_time', function() return FindFirstOf('ReplaySubsystem'):GetReplayCurrentTime() end)
+                inspect('movement_units',function() return movementIO.applied or 0 end)
+                if movementIO.reader and not movementIO.failed then
+                    write(home..'movement-state.txt',session..'\n'..replay..'\nplaying\nframes='..movementIO.reader.frames..'\nunits='..(movementIO.applied or 0))
+                end
                 inspect('pauser', function() local p=world:K2_GetWorldSettings().PauserPlayerState;return valid(p) and p:GetFullName() or 'none' end)
                 inspect('view_target', function() return pc:GetViewTarget():GetFullName() end)
                 inspect('camera_location', function() local v=pc.PlayerCameraManager:GetCameraLocation();return v.X..','..v.Y..','..v.Z end)
@@ -509,7 +639,7 @@ gameLoop(1000, function()
                         if valid(fog) then fog:K2_SetTemporarilyUnfog(pc,true) end
                         for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
                             local name = actor:GetFullName()
-                            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') and actor:IsAlive() and not actor:IsInContainer() then
+                            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') and (actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and not (movementIO.absent and movementIO.absent[name]) and not actor:IsInContainer() then
                                 actor:K2_SetDefaultVisibility(true,true)
                                 actor:K2_OnVisibilityChanged(true)
                                 if not viewerActors[name] then
@@ -568,7 +698,7 @@ gameLoop(1000, function()
                 end
                 if not isMatch then return end
                 if ended and recordingWorld == key then
-                    command(pc, 'demostop'); recordingWorld = nil
+                    movementIO:close(); command(pc, 'demostop'); recordingWorld = nil
                     status('stop_requested', 'Match ended; verify final replay file')
                 elseif began and not ended and recordingWorld ~= key then
                     -- Tempest rebuilds NetDriverDefinitions on travel. Register
