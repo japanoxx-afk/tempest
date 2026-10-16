@@ -503,6 +503,47 @@ class BridgeTests(unittest.TestCase):
         replayTime=1;loops[16]();assert(move.Velocity.X==0)
         """)
 
+    def test_neutral_structure_is_not_a_placement_preview(self):
+        self.start('play', replay='TestReplay')
+        actor=self.lua.eval("{GetFullName=function() return 'BP_Conformation_Garage_C_1' end,IsA=function(self,c) return c=='/Script/Tempest.TedConformationBase' end}")
+        self.assertTrue(self.bridge.isPresentationPawn(self.bridge,actor))
+        actor.GetFullName=self.lua.eval("function() return 'BP_Conformation_Ghost_C_1' end")
+        self.assertFalse(self.bridge.isPresentationPawn(self.bridge,actor))
+
+    def test_visibility_refresh_does_not_rehide_existing_actor(self):
+        self.setup_viewer()
+        self.start('play', replay='TestReplay')
+        self.lua.execute('replayPlaying=true')
+        self.tick();self.tick()
+        self.lua.globals().hiddenCalls=0
+        self.tick()
+        self.assertEqual(self.lua.globals().hiddenCalls,1)  # show only; no hide/show reset
+
+    def test_native_neutral_without_companion_is_initialized(self):
+        self.setup_viewer()
+        self.lua.execute("""
+        neutralInitialized=0
+        placeholder.IsAlive=function() return false end
+        placeholder.IsA=function(self,c) return c=='/Script/Tempest.TedConformationBase' end
+        placeholder.SetDestroyedMeshOnVisibilityChange=function() neutralInitialized=neutralInitialized+1 end
+        """)
+        self.start('play', replay='TestReplay')
+        self.lua.execute('replayPlaying=true')
+        self.tick();self.tick()
+        self.assertEqual(self.lua.globals().neutralInitialized,1)
+
+    def test_explicit_death_is_not_overridden_by_companion_visibility(self):
+        self.setup_input();self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nE\n')
+        self.lua.execute("""
+        replayPlaying=true;loops[16]();assert(locationWrites==1)
+        unit.PawnDeath={bDied=true};unitHidden=nil
+        loops[16]();assert(locationWrites==1);assert(unitHidden==nil)
+        replayTime=1;loops[16]();assert(unitHidden==nil)
+        """)
+        self.assertFalse(self.bridge.alive(self.bridge,self.lua.globals().unit))
+
     def setup_movement_actor(self):
         self.lua.execute("""
         movementChanges=0

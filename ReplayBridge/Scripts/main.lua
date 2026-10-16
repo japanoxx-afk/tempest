@@ -153,6 +153,15 @@ local function gameLoop(interval, callback)
 end
 local worldKey, recordingWorld, startedAt, playSent, prepared
 local movementIO={}
+function movementIO:isDead(actor)
+    local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
+    return ok and dead==true
+end
+function movementIO:isPresentationPawn(actor)
+    local name=actor:GetFullName()
+    return not name:find('Ghost') and not name:find('FoWHighlight') and
+        (not name:find('Conformation') or actor:IsA('/Script/Tempest.TedConformationBase'))
+end
 do
     local ok,module=pcall(require,'Movement')
     if ok then movementIO.codec=module else status('movement_error','Movement module unavailable: '..tostring(module)) end
@@ -160,7 +169,7 @@ end
 function movementIO:identity(actor)
     if not self.codec or not valid(actor) or not actor:IsA('/Script/Tempest.TedPawn') then return nil end
     local name=actor:GetFullName()
-    if name:find('Conformation') or name:find('Ghost') or name:find('FoWHighlight') then return nil end
+    if not self:isPresentationPawn(actor) then return nil end
     local component=actor.EcsActor
     if not valid(component) then return nil end
     if not self.aliasReady then
@@ -229,8 +238,10 @@ function movementIO:play(subsystem)
     for _,actor in ipairs(FindAllOf('TedPawn') or {}) do
         if valid(actor) and not actor:IsInContainer() then
             local name=actor:GetFullName()
-            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') then
-                self.origins[name]=self.origins[name] or actor:K2_GetActorLocation()
+            if self:isPresentationPawn(actor) then
+                -- Unbound actors can initially have an unreplicated spawn pose.
+                -- Refresh that pose until matched; never remap a bound actor.
+                if not self.managed or not self.managed[name] then self.origins[name]=actor:K2_GetActorLocation() end
                 candidates[#candidates+1]={name=name,actor=actor,position=self.origins[name],
                     class=actor:GetClass():GetFName():ToString(),owner=actor:GetOwningPlayerID()}
             end
@@ -242,7 +253,7 @@ function movementIO:play(subsystem)
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
-        if actor then
+        if actor and not self:isDead(actor) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if not self.visible or not self.visible[name] then
                 actor:K2_SetDefaultVisibility(true,true)
@@ -262,7 +273,12 @@ function movementIO:play(subsystem)
     end
     for _,candidate in ipairs(candidates) do
         local actor=candidate.actor;local name=candidate.name
-        if self.managed[name] and not visible[name] then absent[name]=true;actor:SetActorHiddenInGame(true) end
+        if self.managed[name] and not visible[name] then
+            absent[name]=true
+            -- Explicit native death owns its wreck/effects lifecycle. Absence alone
+            -- may mean fog, garrison or replacement, and is never a death event.
+            if not self:isDead(actor) then actor:SetActorHiddenInGame(true) end
+        end
     end
     self.visible=visible
     self.absent=absent
@@ -290,7 +306,7 @@ function movementIO:updateMarkers(actors,samples)
                 local origin=widget.MinimapImage.Slot:GetPosition()
                 for key,actor in pairs(actors) do
                     local sample=samples[key]
-                    if sample and not actor:IsAlive() then
+                    if sample and not actor:IsAlive() and not self:isDead(actor) then
                         seen[key]=true
                         local pin=pins[key]
                         if not valid(pin) then
@@ -322,6 +338,7 @@ function movementIO:fail(err)
     status('movement_error',tostring(err)..'; native replay continues without companion movement')
 end
 function movementIO:alive(actor)
+    if self:isDead(actor) then return false end
     local name=actor:GetFullName()
     if self.absent and self.absent[name] then return false end
     return (self.visible and self.visible[name]) or actor:IsAlive()
@@ -691,24 +708,30 @@ gameLoop(1000, function()
                         if valid(fog) then fog:K2_SetTemporarilyUnfog(pc,true) end
                         for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
                             local name = actor:GetFullName()
-                            if not name:find('Conformation') and not name:find('Ghost') and not name:find('FoWHighlight') and (actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and not (movementIO.absent and movementIO.absent[name]) and not actor:IsInContainer() then
-                                actor:K2_SetDefaultVisibility(true,true)
-                                actor:K2_OnVisibilityChanged(true)
+                            local neutral=actor:IsA('/Script/Tempest.TedConformationBase')
+                            if movementIO:isPresentationPawn(actor) and not movementIO:isDead(actor) and (neutral or actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and not (movementIO.absent and movementIO.absent[name]) and not actor:IsInContainer() then
+                                local first=not viewerActors[name]
+                                if first or actor.bHidden then
+                                    actor:K2_SetDefaultVisibility(true,true)
+                                    actor:K2_OnVisibilityChanged(true)
+                                end
                                 if not viewerActors[name] then
                                     -- Replay-created structures otherwise retain their concealed,
                                     -- underground construction pose. Use the game's visibility init.
-                                    if actor:IsA('/Script/Tempest.TedStructureBase') then
+                                    if neutral then
+                                        actor:SetDestroyedMeshOnVisibilityChange()
+                                    elseif actor:IsA('/Script/Tempest.TedStructureBase') then
                                         actor:SetInitiallyVisible()
                                         actor:ReceiveHandleConstructionVisuals(actor:IsConstructing())
                                     end
                                     viewerActors[name] = true
                                 end
-                                actor:SetActorHiddenInGame(true)
+                                if first then actor:SetActorHiddenInGame(true) end
                                 actor:SetActorHiddenInGame(false)
                                 actor.bHidden = false
                                 local mesh = actor.MeshComp
                                 if valid(mesh) then
-                                    mesh:SetVisibility(false,false)
+                                    if first then mesh:SetVisibility(false,false) end
                                     mesh:SetHiddenInGame(false,false); mesh:SetVisibility(true,false)
                                     mesh:SetComponentTickEnabled(true)
                                     if mesh:IsA('/Script/Engine.SkeletalMeshComponent') then
