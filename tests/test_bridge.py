@@ -76,7 +76,7 @@ class BridgeTests(unittest.TestCase):
 
     def start(self, mode='record', expiry=1100, replay=''):
         (self.data / 'request.txt').write_text(f'{mode}\nsession123\n{expiry}\n{replay}\n')
-        self.lua.execute(SOURCE)
+        self.bridge=self.lua.execute(SOURCE+'\nreturn movementIO')
 
     def commands(self):
         return list(self.lua.globals().commands.values())
@@ -488,6 +488,20 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(self.lua.globals().worldSettings.DemoPlayTimeDilation)
         self.assertIsNone(self.lua.globals().worldSettings.TimeDilation)
         self.assertEqual(len(list(self.lua.globals().keybinds.keys())),0)
+        self.assertIsNone(self.lua.globals().loops[250])
+
+    def test_replay_velocity_updates_only_during_playback_and_resets_on_stop(self):
+        self.setup_input();self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nP\t1\t110\t20\t30\t0\t0\t0\nE\n')
+        self.lua.execute("""
+        move={IsValid=function() return true end}
+        unit.GetMovementComponent=function() return move end
+        unit.IsA=function(self,c) return c=='/Script/Tempest.TedPawn' or c=='/Script/Tempest.TedUnitBase' end
+        loops[16]();assert(move.Velocity==nil)
+        replayPlaying=true;loops[16]();assert(move.Velocity.X==100)
+        replayTime=1;loops[16]();assert(move.Velocity.X==0)
+        """)
 
     def setup_movement_actor(self):
         self.lua.execute("""
@@ -607,6 +621,44 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.lua.globals().unitHidden)
         self.lua.execute('replayTime=1;loops[16]()')
         self.assertTrue(self.lua.globals().unitHidden)
+
+    def test_minimap_pins_use_native_projection_and_remove_absent_targets(self):
+        self.setup_input();self.setup_online_companion()
+        self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local valid=function() return true end
+        local color={R=0.2,G=0.4,B=0.8,A=1}
+        local utils={IsValid=valid,GetWorldBounds=function() return {} end,
+          GetPlayerColorPreset=function() return {PrimaryColor=color} end}
+        local ui={IsValid=valid,CalculateMinimapLocation=function(self,b,p,s,out) out.X=75;out.Y=125 end}
+        local old=StaticFindObject;StaticFindObject=function(p)
+          if p=='/Script/Tempest.Default__TedUtils' then return utils end
+          if p=='/Script/Tempest.Default__TedUIFunctionsLibrary' then return ui end
+          if p=='/Script/UMG.Image' then return {IsValid=valid} end
+          return old(p)
+        end
+        created=0;removed=0
+        StaticConstructObject=function()
+          created=created+1
+          pin={IsValid=valid,SetVisibility=function(self,v) self.visibility=v end,
+            SetColorAndOpacity=function(self,c) self.color=c end,
+            RemoveFromParent=function() removed=removed+1 end,
+            Slot={SetSize=function(self,s) self.size=s end,SetPosition=function(self,p) self.position=p end,SetZOrder=function() end}}
+          return pin
+        end
+        local canvas={IsValid=valid,IsA=function() return true end,AddChildToCanvas=function() end}
+        local widget={IsValid=valid,GetFullName=function() return 'Map' end,GetMinimapSize=function() return {X=228,Y=228} end,
+          MinimapImage={IsValid=valid,GetParent=function() return canvas end,Slot={GetPosition=function() return {X=0,Y=0} end}}}
+        FindAllOf=function(c) if c=='TedMinimapWidget' then return {widget} end;return {} end
+        unit.IsAlive=function() return false end
+        unit.IsA=function(self,c) return c=='/Script/Tempest.TedStructureBase' end
+        samples={track={position={X=30,Y=50,Z=0}}};actors={track=unit}
+        bridge:updateMarkers(actors,samples)
+        assert(created==1 and pin.visibility==3 and pin.color==color)
+        assert(pin.Slot.size.X==5 and pin.Slot.position.X==72.5 and pin.Slot.position.Y==122.5)
+        bridge:updateMarkers(actors,samples);assert(created==1)
+        bridge:updateMarkers({},{});assert(removed==1 and next(bridge.maps.Map)==nil)
+        """)
 
     def test_companion_opened_before_first_world_status_survives_world_ready(self):
         self.setup_input();self.setup_online_companion()

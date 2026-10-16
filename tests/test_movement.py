@@ -63,6 +63,16 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(self.lua.eval('sample.position.X'),50)
         self.assertEqual(abs(self.lua.eval('sample.rotation.Yaw')),180)
 
+    def test_velocity_uses_recorded_clock_and_stops_at_last_sample(self):
+        self.create()
+        self.assertEqual(self.lua.eval("r:at(0.25)['Tank_C:1:2076'].velocity.X"),100)
+        self.assertEqual(self.lua.eval("r:at(1.25)['Tank_C:1:2076'].velocity.X"),0)
+
+    def test_teleport_and_zero_interval_do_not_trigger_running_animation(self):
+        self.lua.execute("a={X=0,Y=0,Z=0};b={X=20000,Y=0,Z=0}")
+        self.assertEqual(self.lua.eval('M.velocity(a,b,0.1).X'),0)
+        self.assertEqual(self.lua.eval('M.velocity(a,b,0).X'),0)
+
     def test_missing_spawn_and_removed_unit_are_not_extrapolated(self):
         self.create()
         self.assertEqual(self.lua.eval("next(r:at(2))"),None)

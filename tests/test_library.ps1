@@ -58,3 +58,31 @@ $legacySource=Join-Path $importSource 'Legacy.replay'
 Import-ReplayFiles $legacySource $importTarget | Out-Null
 if ((Get-Item (Join-Path $importTarget 'Legacy.replay')).Length -ne 2) {throw 'Legacy replay without a companion cannot be imported'}
 'PASS: companion import, existing pair protection and legacy import'
+
+# Replay-only launch arguments: run the real session setup against isolated paths.
+& {
+ $script:BridgeSourceRoot=Split-Path $PSScriptRoot -Parent
+ . (Join-Path $script:BridgeSourceRoot 'Bridge.ps1')
+ $fake=Join-Path $folder 'bridge-launch'
+ $runtime=Join-Path $fake 'runtime'
+ $data=Join-Path $fake 'data'
+ New-Item -ItemType Directory -Path (Join-Path $runtime 'Mods\TempestReplayBridge\Scripts') -Force | Out-Null
+ [IO.File]::WriteAllText((Join-Path $runtime 'tempest-launcher-owned.json'),'{}')
+ [IO.File]::WriteAllText((Join-Path $runtime 'Mods\TempestReplayBridge\Scripts\main.lua'),'')
+ $steam=Join-Path $fake 'steam.exe';[IO.File]::WriteAllText($steam,'')
+ function Get-Process { param($Name,$ErrorAction) return $null }
+ function Get-BridgePaths { param($GamePath) return @{Runtime=$runtime;Data=$data} }
+ function Get-ItemProperty { param($Path,$ErrorAction) return @{SteamExe=$steam} }
+ $script:launches=@()
+ function Start-Process { param($FilePath,$ArgumentList,$WindowStyle) $script:launches+=,@{Path=$FilePath;Args=$ArgumentList;Style=$WindowStyle} }
+ Start-BridgeSession 'test' record | Out-Null
+ if($script:launches[-1].Path -ne 'steam://rungameid/1486920' -or $script:launches[-1].Args){throw 'Live recording launch arguments changed'}
+ Start-BridgeSession 'test' play 'TestReplay' | Out-Null
+ $last=$script:launches[-1]
+ if($last.Path -ne $steam -or ($last.Args -join ' ') -ne '-applaunch 1486920 -NoIntro' -or $last.Style -ne 'Hidden'){throw 'Replay intro launch arguments missing'}
+ $request=[IO.File]::ReadAllLines((Join-Path $data 'request.txt'))
+ if($request[0] -ne 'play' -or $request[3] -ne 'TestReplay'){throw 'Replay request does not match launch'}
+ Start-BridgeSession 'test' record | Out-Null
+ if($script:launches[-1].Args){throw 'Replay arguments leaked into next recording'}
+ 'PASS: replay-only NoIntro, single-use session and unchanged recording launch'
+}

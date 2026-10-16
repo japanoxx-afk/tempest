@@ -74,11 +74,22 @@ function Start-BridgeSession([string]$GamePath,[ValidateSet('probe','record','pl
  # Register DemoNetDriver in the live engine from Lua. User generated INI
  # overrides were observed to be discarded by this game's startup config pass.
  if ($Replay -and $Replay -notmatch '^[a-zA-Z0-9_-]+$') { throw '리플레이 파일명에 지원하지 않는 문자가 있습니다.' }
+ $steamExe=$null
+ if ($Mode -eq 'play') {
+  $steamExe=(Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).SteamExe
+  if (-not $steamExe -or -not (Test-Path -LiteralPath $steamExe)) { throw 'Steam 실행 파일을 찾을 수 없습니다.' }
+ }
  New-Item $p.Data -ItemType Directory -Force | Out-Null
  $session=[guid]::NewGuid().ToString('N')
  $expires=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+120
  [IO.File]::WriteAllText((Join-Path $p.Data 'request.tmp'),"$Mode`n$session`n$expires`n$Replay`n")
  Move-Item -LiteralPath (Join-Path $p.Data 'request.tmp') -Destination (Join-Path $p.Data 'request.txt') -Force
- Start-Process 'steam://rungameid/1486920'
+ if ($Mode -eq 'play') {
+  # The game's BP_HUD_MainMenu.SkipIntro checks the command line for NoIntro.
+  # Pass it for this replay process only; do not edit persistent Steam options.
+  Start-Process -FilePath $steamExe -ArgumentList @('-applaunch','1486920','-NoIntro') -WindowStyle Hidden
+ } else {
+  Start-Process 'steam://rungameid/1486920'
+ }
  return $session
 }

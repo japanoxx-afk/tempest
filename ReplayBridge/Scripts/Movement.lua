@@ -1,5 +1,12 @@
 -- Local, data-only movement companion. No RPCs, engine writes or executable file content.
 local M = {}
+function M.velocity(a,b,dt)
+    if not b or not dt or dt<=0 then return {X=0,Y=0,Z=0} end
+    local v={X=(b.X-a.X)/dt,Y=(b.Y-a.Y)/dt,Z=(b.Z-a.Z)/dt}
+    -- Teleports are position changes, not locomotion animation.
+    if v.X*v.X+v.Y*v.Y+v.Z*v.Z>10000^2 then return {X=0,Y=0,Z=0} end
+    return v
+end
 local function finite(n) return type(n)=='number' and n==n and math.abs(n)<1e9 end
 local function token(s) return type(s)=='string' and #s<=160 and s:match('^[%w_%-]+$') end
 local function fields(line)
@@ -92,8 +99,9 @@ function M.reader(path,name)
             if v then
                 local p,q=u.position,v.position;local x,y=u.rotation,v.rotation
                 result[key]={position={X=blend(p.X,q.X,alpha),Y=blend(p.Y,q.Y,alpha),Z=blend(p.Z,q.Z,alpha)},
+                    velocity=M.velocity(p,q,b.time-a.time),
                     rotation={Pitch=angle(x.Pitch,y.Pitch,alpha),Yaw=angle(x.Yaw,y.Yaw,alpha),Roll=angle(x.Roll,y.Roll,alpha)}}
-            else result[key]=u end
+            else result[key]={position=u.position,rotation=u.rotation,velocity={X=0,Y=0,Z=0}} end
         end
         return result
     end

@@ -180,6 +180,7 @@ function movementIO:identity(actor)
     return self.codec.key(class,owner,entity),class,owner,entity
 end
 function movementIO:close()
+    self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
         self.writer:close();self.writer=nil
         write(home..'movement-state.txt',session..'\n'..self.name..'\ncompleted\nframes='..(self.frames or 0)..'\nunits='..(self.units or 0))
@@ -209,6 +210,7 @@ function movementIO:record(subsystem,name,actors)
     if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
 end
 function movementIO:play(subsystem)
+    if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
     if not self.codec or self.failed then return end
     if not self.opened then
         self.opened=true
@@ -249,6 +251,12 @@ function movementIO:play(subsystem)
             actor:SetActorHiddenInGame(false)
             actor:K2_SetActorLocation(sample.position,false,{},true)
             actor:K2_SetActorRotation(sample.rotation,true)
+            if actor:IsA('/Script/Tempest.TedUnitBase') then
+                -- Native animation reads UnitMovement.Velocity. Teleporting the
+                -- actor alone leaves it zero and produces frozen-pose sliding.
+                local movement=actor:GetMovementComponent()
+                if valid(movement) then movement.Velocity=sample.velocity end
+            end
             applied=applied+1
         end
     end
@@ -259,6 +267,54 @@ function movementIO:play(subsystem)
     self.visible=visible
     self.absent=absent
     self.applied=applied
+    if not self.markerFailed and (not self.markerTime or time-self.markerTime>=0.1) then
+        self.markerTime=time
+        local ok,err=pcall(function() self:updateMarkers(actors,samples) end)
+        if not ok then self.markerFailed=true;status('minimap_marker_error',tostring(err)) end
+    end
+end
+function movementIO:updateMarkers(actors,samples)
+    -- Presentation-only pins: client demos can have visible buildings but no
+    -- ECS alive state for the native minimap renderer. Never fabricate health.
+    local utils=StaticFindObject('/Script/Tempest.Default__TedUtils')
+    local ui=StaticFindObject('/Script/Tempest.Default__TedUIFunctionsLibrary')
+    local imageClass=StaticFindObject('/Script/UMG.Image')
+    if not valid(utils) or not valid(ui) or not valid(imageClass) then return end
+    self.maps=self.maps or {}
+    for _,widget in ipairs(FindAllOf('TedMinimapWidget') or {}) do
+        if valid(widget) and valid(widget.MinimapImage) then
+            local canvas=widget.MinimapImage:GetParent()
+            if valid(canvas) and canvas:IsA('/Script/UMG.CanvasPanel') then
+                local name=widget:GetFullName();local pins=self.maps[name] or {};self.maps[name]=pins
+                local bounds=utils:GetWorldBounds(widget);local size=widget:GetMinimapSize();local seen={}
+                local origin=widget.MinimapImage.Slot:GetPosition()
+                for key,actor in pairs(actors) do
+                    local sample=samples[key]
+                    if sample and not actor:IsAlive() then
+                        seen[key]=true
+                        local pin=pins[key]
+                        if not valid(pin) then
+                            pin=StaticConstructObject(imageClass,widget)
+                            assert(valid(pin),'Minimap image allocation failed')
+                            canvas:AddChildToCanvas(pin);pin:SetVisibility(3) -- HitTestInvisible: clicks pass through
+                            pins[key]=pin
+                        end
+                        local color=utils:GetPlayerColorPreset(widget,actor:GetOwningPlayerID())
+                        pin:SetColorAndOpacity(color.PrimaryColor)
+                        local result={X=0,Y=0}
+                        ui:CalculateMinimapLocation(bounds,{X=sample.position.X,Y=sample.position.Y},size,result)
+                        local width=actor:IsA('/Script/Tempest.TedStructureBase') and 5 or 3
+                        pin.Slot:SetSize({X=width,Y=width})
+                        pin.Slot:SetPosition({X=origin.X+result.X-width/2,Y=origin.Y+result.Y-width/2})
+                        pin.Slot:SetZOrder(10)
+                    end
+                end
+                for key,pin in pairs(pins) do
+                    if not seen[key] then if valid(pin) then pin:RemoveFromParent() end;pins[key]=nil end
+                end
+            end
+        end
+    end
 end
 function movementIO:fail(err)
     self:close();self.failed=true
@@ -589,7 +645,7 @@ gameLoop(1000, function()
                 if not streamOk then snapshot[#snapshot+1]='stream_error='..tostring(streamErr) end
                 write(home .. 'playback.txt', table.concat(snapshot,'\n'))
                 if not prepared then prepareSpectator(); prepared = true end
-                if not playSent and os.time() - startedAt >= 3 then
+                if not playSent then
                     assert(replay ~= '', 'Replay name missing')
                     ensureReplayDriver(); diagnostics()
                     playSent = true -- never retry dispatch: restarting playback loops would lose progress
