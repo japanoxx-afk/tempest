@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from lupa import LuaRuntime
 
-SOURCE = (pathlib.Path(__file__).parents[1] / 'ReplayBridge/Scripts/main.lua').read_text()
+SOURCE = (pathlib.Path(__file__).parents[1] / 'ReplayBridge/Scripts/main.lua').read_text(encoding='utf-8')
 MOCK = r'''
 now = 1000; commands = {}; began = false; ended = false
 invalid = {IsValid=function() return false end}
@@ -54,7 +54,7 @@ loops={}; LoopAsync=function(interval, callback) loops[interval]=callback; if in
 LoopInGameThreadWithDelay=function(interval,callback) loops[interval]=callback; if interval==1000 then loop=callback end;return interval end
 CancelDelayedAction=function() return true end
 ExecuteInGameThread=function(callback) callback() end
-Key={U=85,F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
+Key={Q=81,W=87,E=69,R=82,T=84,Y=89,A=65,S=83,U=85,F6=117,F7=118,F8=119,I=73,C=67,J=74,K=75,L=76}; keybinds={}
 RegisterKeyBind=function(key,callback) keybinds[key]=callback end
 '''
 
@@ -346,6 +346,51 @@ class BridgeTests(unittest.TestCase):
         """)
         self.assertEqual(self.lua.eval('toggles'),1)
         self.assertEqual(self.lua.eval('#moves'),0)
+
+    def test_stat_shortcuts_select_all_eight_options_only_in_replay(self):
+        self.setup_input()
+        self.lua.execute("""
+        choices={}
+        widget={IsValid=function() return true end,GetFullName=function() return 'Widget /Engine/Transient.HUD' end,
+          IsInViewport=function() return true end,StatsOverview={StatsSelector={IsValid=function() return true end,
+            GetOptionsCount=function() return 8 end,SelectOptionByIndex=function(self,i) choices[#choices+1]=i end}}}
+        local old=FindAllOf
+        FindAllOf=function(c) if c=='TedThirdPartySpectatorHud' then return {widget} end;return old(c) end
+        keybinds[Key.Q]();assert(#choices==0)
+        replayPlaying=true
+        for _,key in ipairs({Key.Q,Key.W,Key.E,Key.R,Key.T,Key.Y,Key.A,Key.S}) do keybinds[key]() end
+        for i=1,8 do assert(choices[i]==i-1) end
+        """)
+
+    def test_replay_end_pauses_once_and_cannot_be_resumed_with_f8(self):
+        self.setup_viewer()
+        self.start('play',replay='TestReplay')
+        self.bridge.codec.duration=self.lua.eval('function() return 10 end')
+        self.lua.execute('replayPlaying=true;replayTime=9;replaySystem.GetReplayCurrentTime=function() return replayTime end')
+        self.tick();self.tick()
+        self.assertNotIn('demopause',self.commands())
+        self.lua.execute('replayTime=10')
+        self.tick()
+        self.assertEqual(self.commands().count('demopause'),1)
+        self.lua.execute('keybinds[Key.F8]();keybinds[Key.F7]()')
+        self.tick()
+        self.assertEqual(self.commands().count('demopause'),1)
+        self.assertIn('viewer_finished',(self.data/'status.txt').read_text(encoding='utf-8'))
+
+    def test_locomotion_hook_changes_only_prepared_infantry_and_resets_when_inactive(self):
+        self.setup_input();self.setup_online_companion()
+        self.lua.execute("""
+        RegisterHook=function(path,callback) animHook=callback end
+        anim={IsValid=function() return true end,IsA=function() return true end,
+          GetFullName=function() return 'InfantryAnim' end,IsMovingSpeedThreshold=5}
+        unit.MeshComp={IsValid=function() return true end,GetAnimInstance=function() return anim end}
+        unit.GetDefinitionAsset=function() return {IsValid=function() return true end,MovementSpeed=550} end
+        """)
+        self.bridge.animationFrames=self.lua.table()
+        self.bridge.updateLocomotion(self.bridge,self.lua.globals().unit,self.lua.eval('{X=550,Y=0,Z=0}'))
+        self.lua.execute('anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==550);assert(anim.MaxSpeed==550);assert(anim.bIsMoving)')
+        self.bridge.close(self.bridge)
+        self.lua.execute('anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==100)')
 
     def test_right_edge_moves_camera_right_and_outside_viewport_is_ignored(self):
         self.setup_input()

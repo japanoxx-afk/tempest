@@ -1,5 +1,21 @@
 -- Local, data-only movement companion. No RPCs, engine writes or executable file content.
 local M = {}
+-- Installed UE local replay container v7: magic, version, custom-version
+-- container (GUID + version entries), then recorded length in milliseconds.
+-- Unknown/truncated formats deliberately have no guessed end time.
+function M.duration(path)
+    local f=io.open(path,'rb');if not f then return nil end
+    local header=f:read(656) or '';f:close()
+    local function uint(offset)
+        local a,b,c,d=header:byte(offset+1,offset+4)
+        if not d then return nil end
+        return a+b*256+c*65536+d*16777216
+    end
+    if uint(0)~=0x1ca2e27f or uint(4)~=7 then return nil end
+    local count=uint(8);if not count or count>32 then return nil end
+    local ms=uint(12+count*20)
+    if ms and ms>0 and ms<=86400000 then return ms/1000 end
+end
 function M.velocity(a,b,dt)
     if not b or not dt or dt<=0 then return {X=0,Y=0,Z=0} end
     local v={X=(b.X-a.X)/dt,Y=(b.Y-a.Y)/dt,Z=(b.Z-a.Z)/dt}

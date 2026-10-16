@@ -2,6 +2,7 @@
 import pathlib
 import tempfile
 import unittest
+import struct
 from lupa import LuaRuntime, LuaError
 
 SOURCE=(pathlib.Path(__file__).parents[1]/'ReplayBridge/Scripts/Movement.lua').read_text()
@@ -26,6 +27,17 @@ class MovementTests(unittest.TestCase):
 
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
+
+    def test_replay_duration_reads_custom_version_container(self):
+        self.path.write_bytes(struct.pack('<III',0x1ca2e27f,7,1)+bytes(16)+struct.pack('<II',7,217047))
+        self.assertAlmostEqual(self.lua.globals().M.duration(str(self.path)),217.047)
+
+    def test_replay_duration_rejects_unknown_truncated_and_unbounded_headers(self):
+        for data in [b'',struct.pack('<III',0x1ca2e27f,8,0),
+                     struct.pack('<III',0x1ca2e27f,7,33),
+                     struct.pack('<IIII',0x1ca2e27f,7,0,0xffffffff)]:
+            self.path.write_bytes(data)
+            self.assertIsNone(self.lua.globals().M.duration(str(self.path)))
 
     def test_pose_binding_ignores_different_runtime_entity_numbers_and_stays_attached(self):
         self.create()

@@ -189,12 +189,40 @@ function movementIO:identity(actor)
     return self.codec.key(class,owner,entity),class,owner,entity
 end
 function movementIO:close()
+    self.animationFrames={}
     self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
         self.writer:close();self.writer=nil
         write(home..'movement-state.txt',session..'\n'..self.name..'\ncompleted\nframes='..(self.frames or 0)..'\nunits='..(self.units or 0))
     end
     if self.reader then self.reader:close();self.reader=nil end
+end
+function movementIO:updateLocomotion(actor,velocity)
+    local mesh=actor.MeshComp
+    if not valid(mesh) then return end
+    local anim=mesh:GetAnimInstance()
+    if not valid(anim) or not anim:IsA('/Script/Tempest.TedAnimInstance_Infantry') then return end
+    local definition=actor:GetDefinitionAsset()
+    if not valid(definition) then return end
+    local maxSpeed=definition.MovementSpeed
+    if type(maxSpeed)~='number' or maxSpeed<=0 or maxSpeed>10000 then return end
+    if not self.animationHook then
+        local path='/Game/Tempest/Blueprints/Animation/ABP_InfantryBase.ABP_InfantryBase_C:BlueprintThreadSafeUpdateAnimation'
+        RegisterHook(path,function(context)
+            -- This instance uses game-thread animation. Apply after native update,
+            -- which otherwise replaces speed with the replay's missing-ECS default.
+            local instance=context:get()
+            if not valid(instance) or instance.bUseMultiThreadedAnimationUpdate then return end
+            local frame=self.animationFrames and self.animationFrames[instance:GetFullName()]
+            if not frame then return end
+            instance.Speed=frame.speed;instance.MaxSpeed=frame.maxSpeed
+            instance.bIsMoving=frame.speed>instance.IsMovingSpeedThreshold
+        end)
+        self.animationHook=true
+    end
+    anim.bUseMultiThreadedAnimationUpdate=false
+    mesh.bEnableUpdateRateOptimizations=false
+    self.animationFrames[anim:GetFullName()]={speed=math.sqrt(velocity.X^2+velocity.Y^2),maxSpeed=maxSpeed}
 end
 function movementIO:record(subsystem,name,actors)
     if not self.codec or self.failed then return end
@@ -219,6 +247,7 @@ function movementIO:record(subsystem,name,actors)
     if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
 end
 function movementIO:play(subsystem)
+    self.animationFrames={}
     if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
     if not self.codec or self.failed then return end
     if not self.opened then
@@ -267,6 +296,10 @@ function movementIO:play(subsystem)
                 -- actor alone leaves it zero and produces frozen-pose sliding.
                 local movement=actor:GetMovementComponent()
                 if valid(movement) then movement.Velocity=sample.velocity end
+                if not self.animationFailed then
+                    local ok,err=pcall(function() self:updateLocomotion(actor,sample.velocity) end)
+                    if not ok then self.animationFailed=true;status('animation_error',tostring(err)) end
+                end
             end
             applied=applied+1
         end
@@ -362,6 +395,8 @@ end
 local inputController
 local configuredWidgets = {}
 local viewerControllerName
+local viewerFinished=false
+local replayDuration
 local function stopViewer(reason)
     if viewerStopped then return end
     viewerStopped = true
@@ -396,6 +431,29 @@ local function liveWidgets(className, action)
     for _, widget in ipairs(FindAllOf(className) or {}) do
         if valid(widget) and widget:GetFullName():find('/Engine/Transient',1,true) then action(widget) end
     end
+end
+local function finishReplay(pc)
+    if viewerFinished then return end
+    viewerFinished=true;followTarget=nil
+    local settings=pc:GetWorld():K2_GetWorldSettings()
+    if not valid(settings.PauserPlayerState) then command(pc,'demopause') end
+    local ok,err=pcall(function()
+        liveWidgets('TedThirdPartySpectatorHud',function(hud)
+            if not hud:IsInViewport() then return end
+            local canvas=hud.Box_StatsOverview:GetParent()
+            if not valid(canvas) or not canvas:IsA('/Script/UMG.CanvasPanel') then return end
+            local label=StaticConstructObject(StaticFindObject('/Script/UMG.TextBlock'),hud)
+            canvas:AddChildToCanvas(label)
+            label:SetText(FText('리플레이 종료 · 기록된 마지막 시점입니다'))
+            label:SetColorAndOpacity({SpecifiedColor={R=1,G=1,B=1,A=1},ColorUseRule=0})
+            local font=label.Font;font.Size=24;label:SetFont(font)
+            label:SetVisibility(3)
+            label.Slot:SetAnchors({Minimum={X=0.5,Y=0.12},Maximum={X=0.5,Y=0.12}})
+            label.Slot:SetAlignment({X=0.5,Y=0})
+            label.Slot:SetAutoSize(true);label.Slot:SetPosition({X=0,Y=0});label.Slot:SetZOrder(100)
+        end)
+    end)
+    status('viewer_finished','리플레이 종료 · 저장된 마지막 시점. 승패 정보가 없는 파일에서는 결과를 추정하지 않습니다.'..(ok and '' or ' / banner: '..tostring(err)))
 end
 local function configureViewer(pc)
     pc.bShowMouseCursor = true
@@ -471,6 +529,17 @@ if mode == 'play' then
     bind(Key.I,function()
         liveWidgets('TedThirdPartySpectatorHud',function(widget) widget:SingularStatShow_ButtonClick() end)
     end)
+    for index,key in ipairs({Key.Q,Key.W,Key.E,Key.R,Key.T,Key.Y,Key.A,Key.S}) do
+        bind(key,function()
+            liveWidgets('TedThirdPartySpectatorHud',function(hud)
+                if not hud:IsInViewport() then return end
+                local selector=hud.StatsOverview.StatsSelector
+                if valid(selector) and selector:GetOptionsCount()>=index then
+                    selector:SelectOptionByIndex(index-1)
+                end
+            end)
+        end)
+    end
     local hudHidden=false
     bind(Key.U,function()
         local panels={{'VerticalBox_Minimap','MinimapShow_ButtonClick'},
@@ -501,14 +570,15 @@ if mode == 'play' then
         end
     end)
     bind(Key.F7,function(pc)
+        if viewerFinished then return end
         local index=2
         for i,speed in ipairs(speeds) do if speed==viewerSpeed then index=i end end
         setViewerSpeed(pc,speeds[index % #speeds + 1])
     end)
-    bind(Key.F8,function(pc) command(pc,'demopause') end)
+    bind(Key.F8,function(pc) if not viewerFinished then command(pc,'demopause') end end)
     local inputPending, inputErrors, mouseWasDown = false, 0, false
     gameLoop(16,function()
-        if viewerStopped then return true end
+        if viewerStopped or viewerFinished then return true end
         if travelling or inputPending then return false end
         inputPending = true
         local function tick()
@@ -571,7 +641,7 @@ end)
 local pending = false
 local errors = 0
 gameLoop(1000, function()
-    if viewerStopped then return true end
+    if viewerStopped or viewerFinished then return true end
     if travelling or pending then return false end
     pending = true
     local function tick()
@@ -586,6 +656,12 @@ gameLoop(1000, function()
             end
             local pc = getLocalPlayerController()
             if not valid(pc) then return end
+            if mode=='play' and viewerInitialized and movementIO.codec then
+                if replayDuration==nil then replayDuration=movementIO.codec.duration(os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..replay..'.replay') or false end
+                if replayDuration and FindFirstOf('ReplaySubsystem'):GetReplayCurrentTime()>=replayDuration-0.02 then
+                    finishReplay(pc);return
+                end
+            end
             local control = read(home .. 'control.txt')
             if control then
                 os.remove(home .. 'control.txt')
