@@ -74,3 +74,10 @@ An additional clean run d295d120ae4644d1889907e03b70c483 crashed during playback
 
 
 Final production session e6d2cca88c1e4ed1add872082e6dbab4 used source SHA256 0FD86F81DB9A272D1A7E012C98306C9ED875315F791E252443B7CC6E881F4812, matching the installed Lua exactly, with no development harness. Replay time reached the native end at 52.109 seconds. The viewer remained active for approximately 148 seconds, including mouse-edge movement, and then returned to the main menu. viewer_stopped was recorded before teardown. No new crash directory or registry-reference error was produced in this run. This is a successful native regression run; it does not guarantee that every crash in all replays/builds is eliminated. The final mocked suite has 32 tests, including direct reuse of the game-thread timer without per-frame dispatch.
+
+
+## v0.3.3 online recording diagnosis (not native-verified)
+
+A user-reported online skirmish entered Overgrown Oasis at 14:06:45 and returned to the menu at 14:21:00 in record-mode session 489703cda18044249e0dca1804f19678. No demorec command, recording-driver event or new replay file was present. The old bridge silently returned when its Tempest GameState/controller-start preconditions were not satisfied, and did not log which precondition failed. Therefore the evidence proves a skipped request, not an engine recording rejection or a specifically proven HasMatchStarted fault.
+
+The update adds a replicated MatchState InProgress start path, respects explicit lobby/terminal states, persists recording-state.txt and reports waiting/unrecorded exits. Mock tests cover an unready controller with InProgress, explicit lobby/terminal state and a match left unrecorded. Actual online recording and playback remain unverified; the next fresh online record-mode launch is needed to collect native evidence. No online match was initiated or user game interrupted for this change.

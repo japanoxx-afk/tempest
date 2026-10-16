@@ -29,10 +29,12 @@ Tempest Rising용 Windows 리플레이 런처입니다. `Start.cmd`를 실행하
 - 실험 모드 설치·백업 제거, 호환성 진단
 - GitHub Releases 업데이트, SHA256 검증 및 재시작
 
-설정과 진단은 `%LOCALAPPDATA%\TempestReplayLauncher`에 저장됩니다. 브리지의 명령 전송과 녹화 성공은 구분됩니다. `commands.log`, `events.log`, `playback.txt`와 실제 파일 크기를 확인할 수 있습니다. 제어 흐름 테스트 32개는 모의 호스트를 사용하며 실게임 검증을 대체하지 않습니다.
+설정과 진단은 `%LOCALAPPDATA%\TempestReplayLauncher`에 저장됩니다. 브리지의 명령 전송과 녹화 성공은 구분됩니다. `commands.log`, `events.log`, `playback.txt`와 실제 파일 크기를 확인할 수 있습니다. 제어 흐름 테스트 35개는 모의 호스트를 사용하며 실게임 검증을 대체하지 않습니다.
 
 ## 배포
 
 `version.json`을 올리고 일치하는 버전 태그를 push하면 GitHub Actions가 ZIP과 체크섬을 Release에 게시합니다. 런처 업데이트 버튼이 최신 정식 Release를 확인합니다. 소스 checkout에서 업데이트하면 소스가 배포 파일로 덮어써질 수 있으므로 개발용 checkout과 배포 폴더를 분리하세요.
 
 게임 바이너리, 게임 에셋, 리플레이 내용과 계정 로그는 저장소에 포함하지 않습니다. 초기 조사 자료는 [조사 기록](docs/REPLAY-INVESTIGATION.md)을 참고하세요.
+
+온라인 클라이언트의 복제된 GameState.MatchState가 InProgress이면 로컬 컨트롤러의 시작 판정과 별도로 기록을 시도합니다. 온라인 실제 파일 생성과 전체 관전자 재생은 아직 미검증입니다. 기록 시작을 감지하지 못하면 런처에 녹화 미시작을 표시하며, recording-state.txt에 판정 내용을 저장합니다. 클라이언트가 수신하지 못한 정보는 녹화로 복원할 수 없습니다.

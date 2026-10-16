@@ -9,6 +9,7 @@ MOCK = r'''
 now = 1000; commands = {}; began = false; ended = false
 invalid = {IsValid=function() return false end}
 gs = {IsValid=function() return true end, IsA=function() return true end,
+ GetFullName=function() return "TedGameState" end,
  HasMatchStarted=function() return began end, HasMatchEnded=function() return ended end}
 world = {GameState=gs, IsValid=function() return true end,
  K2_GetWorldSettings=function() return worldSettings end,
@@ -408,6 +409,33 @@ class BridgeTests(unittest.TestCase):
         for i=1,100 do loops[33]() end
         """)
         self.assertFalse((self.data / 'status.txt').read_text().find('viewer_control_error') >= 0)
+
+    def test_replicated_inprogress_starts_recording_when_client_controller_is_not_ready(self):
+        self.lua.execute("gs.MatchState={ToString=function() return 'InProgress' end};began=false")
+        self.start()
+        self.tick()
+        self.assertEqual(len(self.commands()),1)
+        self.assertTrue(self.commands()[0].startswith('demorec '))
+
+    def test_replicated_lobby_and_terminal_states_never_start_recording(self):
+        self.lua.execute("gs.MatchState={ToString=function() return 'WaitingToStart' end};began=true")
+        self.start()
+        self.tick()
+        self.assertEqual(self.commands(),[])
+        self.lua.execute("gs.MatchState={ToString=function() return 'WaitingPostMatch' end}")
+        self.tick()
+        self.assertEqual(self.commands(),[])
+
+    def test_unrecorded_match_is_reported_instead_of_silently_returning_to_ready(self):
+        self.start()
+        self.tick()
+        self.lua.execute('now=1012')
+        self.tick()
+        self.assertIn('record_waiting',(self.data / 'status.txt').read_text())
+        self.assertIn('started=false',(self.data / 'recording-state.txt').read_text())
+        self.lua.execute("worldName='MainMenu';gs.IsA=function() return false end")
+        self.tick()
+        self.assertIn('record_not_started',(self.data / 'status.txt').read_text())
 
 
 if __name__ == '__main__':

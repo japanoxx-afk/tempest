@@ -70,7 +70,7 @@ $timer.Add_Tick({
   $p=Get-BridgePaths $settings.game; $statusFile=Join-Path $p.Data 'status.txt'
   $lines=@(if (Test-Path $statusFile) { Get-Content $statusFile -Encoding UTF8 })
   if ($lines.Count -ge 4 -and $lines[0] -eq $script:bridgeSession) {
-   $labels=@{record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료';viewer_initializing='관전자 HUD·카메라 연결됨';play_requested='리플레이 로딩 요청'}
+   $labels=@{record_waiting='녹화 미시작 · 경기 시작 판정 대기';record_not_started='이 경기 녹화 안 됨 · 시작 판정 확인 필요';record_requested='녹화 명령 전송 · 성공 확인 중';record_driver_active='기록 드라이버 활성 · 파일 확인 필요';record_failed='녹화 실패 · 기록 드라이버가 생성되지 않음';record_session_left='경기 화면 종료 · 아래 기록 결과 확인';bridge_error='브리지 오류';probe_ready='진단 준비 완료';viewer_initializing='관전자 HUD·카메라 연결됨';play_requested='리플레이 로딩 요청'}
    $label=if ($labels.ContainsKey($lines[2])) { $labels[$lines[2]] } else { $lines[2] }
    $ui.BridgeStatus.Text="브리지: $label · $($lines[3])"
    if ($lines[2] -in @('record_requested','record_driver_active')) {

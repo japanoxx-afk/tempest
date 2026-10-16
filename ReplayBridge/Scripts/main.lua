@@ -326,6 +326,7 @@ if mode == 'play' then
 end
 local recordingIndex = 0
 local recordingRequestedAt, recordingName, recordingVerified, recordingFailed
+local waitingWorld, waitingDetail, waitingNotice, attemptedWorld
 local pending = false
 local errors = 0
 gameLoop(1000, function()
@@ -358,6 +359,8 @@ gameLoop(1000, function()
             if not valid(world) then return end
             local key = world:GetFullName()
             if key ~= worldKey then
+                local missed = mode == 'record' and waitingWorld ~= nil and waitingWorld == worldKey and attemptedWorld ~= worldKey
+                local missedDetail = waitingDetail
                 if recordingWorld then
                     if recordingFailed or not recordingVerified then
                         status('record_failed', (recordingName or '') .. '; match left without an active recording driver; no recording success')
@@ -368,6 +371,8 @@ gameLoop(1000, function()
                 worldKey = key; startedAt = os.time(); diagnostics()
                 if not recordingWorld then status('world_ready', key) end
                 recordingWorld = nil
+                waitingWorld, waitingDetail, waitingNotice, attemptedWorld = nil, nil, nil, nil
+                if missed then status('record_not_started','Match left without a recording request; ' .. (missedDetail or 'see recording-state.txt')) end
             end
             if mode == 'probe' then status('probe_ready', key); return end
             local gs = world.GameState
@@ -480,9 +485,34 @@ gameLoop(1000, function()
                     end
                 end
             elseif mode == 'record' then
-                if not valid(gs) or not gs:IsA('/Script/Tempest.TedGameState') then return end
-                local began = pc:HasMatchStarted()
-                local ended = pc:HasMatchEnded()
+                local isMatch = valid(gs) and gs:IsA('/Script/Tempest.TedGameState')
+                local matchState = ''
+                if isMatch then
+                    local ok,value = pcall(function() return gs.MatchState:ToString() end)
+                    if ok then matchState = value end
+                end
+                local began,ended = false,false
+                if isMatch then
+                    began = pc:HasMatchStarted()
+                    ended = pc:HasMatchEnded()
+                    -- On clients the replicated GameState can be InProgress before
+                    -- the local controller acknowledges the match. Never override
+                    -- the replicated terminal/lobby states with a stale controller.
+                    if matchState == 'InProgress' then began=true;ended=false
+                    elseif matchState == 'WaitingPostMatch' or matchState == 'LeavingMap' or matchState == 'Aborted' then ended=true
+                    elseif matchState == 'WaitingToStart' or matchState == 'EnteringMap' then began=false;ended=false end
+                end
+                local inMatchMap = key:find('/Maps/Multiplayer/',1,true) ~= nil
+                if isMatch or inMatchMap then
+                    waitingWorld = key
+                    waitingDetail = 'state='..matchState..'; started='..tostring(began)..'; ended='..tostring(ended)..'; game_state='..(valid(gs) and gs:GetFullName() or 'none')
+                    write(home..'recording-state.txt','session='..session..'\nworld='..key..'\ncontroller='..pc:GetFullName()..'\n'..waitingDetail)
+                    if not recordingWorld and attemptedWorld ~= key and os.time()-startedAt>=10 and waitingNotice~=waitingDetail then
+                        status('record_waiting','Recording NOT active; '..waitingDetail)
+                        waitingNotice=waitingDetail
+                    end
+                end
+                if not isMatch then return end
                 if ended and recordingWorld == key then
                     command(pc, 'demostop'); recordingWorld = nil
                     status('stop_requested', 'Match ended; verify final replay file')
@@ -493,6 +523,7 @@ gameLoop(1000, function()
                     recordingIndex = recordingIndex + 1
                     local name = 'Tempest_' .. os.date('%Y%m%d_%H%M%S') .. '_' .. session:sub(1,8) .. '_' .. recordingIndex
                     local output = command(pc, 'demorec ' .. name)
+                    attemptedWorld = key
                     recordingWorld = key
                     recordingRequestedAt = os.time(); recordingName = name
                     recordingVerified = false; recordingFailed = false
