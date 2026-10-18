@@ -512,6 +512,7 @@ class BridgeTests(unittest.TestCase):
 
     def test_u_calls_panel_buttons_only_in_replay_and_toggles_back(self):
         self.setup_input()
+        self.lua.globals().bridge = self.bridge
         self.lua.execute("""
         clicks=0
         function panel() return {v=4,GetVisibility=function(self) return self.v end} end
@@ -523,9 +524,15 @@ class BridgeTests(unittest.TestCase):
         hud.PlayerListShow_ButtonClick=function(self) toggle(self.PlayerInfoPanel) end
         hud.SingularStatShow_ButtonClick=function(self) toggle(self.StatsOverview) end
         local oldFind=FindAllOf;FindAllOf=function(cls) if cls=='TedThirdPartySpectatorHud' then return {hud} end;return oldFind(cls) end
+        removedPins=0
+        bridge.visible={Tracked=true}
+        bridge.maps={Map={Tracked={IsValid=function() return true end,
+            RemoveFromParent=function() removedPins=removedPins+1 end}}}
         keybinds[Key.U]();assert(clicks==0)
         replayPlaying=true;keybinds[Key.U]();assert(clicks==3 and hud.StatsOverview.v==1)
+        assert(next(bridge.visible)==nil and removedPins==0)
         keybinds[Key.U]();assert(clicks==6 and hud.StatsOverview.v==4)
+        assert(next(bridge.visible)==nil and bridge.maps==nil and removedPins==1)
         """)
 
     def test_recording_has_no_viewer_hotkeys_or_speed_writes(self):
@@ -565,6 +572,25 @@ class BridgeTests(unittest.TestCase):
         self.lua.globals().hiddenCalls=0
         self.tick()
         self.assertEqual(self.lua.globals().hiddenCalls,1)  # show only; no hide/show reset
+
+    def test_u_refreshes_replay_actor_visibility_without_rehiding(self):
+        self.setup_viewer()
+        self.lua.execute('''
+        visibilityCalls=0
+        actor.K2_SetDefaultVisibility=function() visibilityCalls=visibilityCalls+1 end
+        ''')
+        self.start('play',replay='TestReplay')
+        self.lua.execute('replayPlaying=true')
+        self.tick();self.tick();self.tick()
+        initial=self.lua.globals().visibilityCalls
+        self.tick()
+        self.assertEqual(self.lua.globals().visibilityCalls,initial)
+        self.lua.execute('pc.Pawn={IsValid=function() return true end}')
+        self.lua.execute('keybinds[Key.U]()')
+        self.tick()
+        self.assertEqual(self.lua.globals().visibilityCalls,initial+1)
+        self.tick()
+        self.assertEqual(self.lua.globals().visibilityCalls,initial+1)
 
     def test_native_neutral_without_companion_is_initialized(self):
         self.setup_viewer()

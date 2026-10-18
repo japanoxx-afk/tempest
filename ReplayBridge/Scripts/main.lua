@@ -198,6 +198,19 @@ function movementIO:close()
     end
     if self.reader then self.reader:close();self.reader=nil end
 end
+function movementIO:resetMarkers()
+    -- A minimap panel can replace its canvas when the spectator HUD toggles.
+    -- Cached pins then remain valid UObjects but no longer render on that canvas.
+    if self.maps then
+        for _,pins in pairs(self.maps) do
+            for _,pin in pairs(pins) do
+                if valid(pin) then pin:RemoveFromParent() end
+            end
+        end
+    end
+    self.maps=nil
+    self.markerTime=nil
+end
 function movementIO:updateLocomotion(actor,velocity)
     local mesh=actor.MeshComp
     if not valid(mesh) then return end
@@ -427,6 +440,7 @@ function movementIO:alive(actor)
 end
 local viewerInitialized = false
 local viewerActors = {}
+local hudVisibilityRefresh = false
 local cameraIndex = 1
 local followTarget
 local viewerSpeed, appliedSpeed = 1, nil
@@ -641,6 +655,16 @@ if mode == 'play' then
             end
         end)
         hudHidden=not hudHidden
+        -- Panel callbacks can invalidate the replay visibility channels even
+        -- while the HUD is hidden; the world itself must remain visible.
+        movementIO.visible={}
+        hudVisibilityRefresh=true
+        if not hudHidden then
+            -- Game HUD show buttons may rebuild their minimap and refresh the
+            -- native visibility channels. Replay presentation must follow them.
+            movementIO:resetMarkers()
+            configuredWidgets={} -- rebuilt widgets may reuse their old names
+        end
         status('viewer_hud',hudHidden and 'Observer panels hidden through their buttons' or 'Observer panels shown through their buttons')
     end)
     bind(Key.C,function(pc)
@@ -875,7 +899,7 @@ gameLoop(1000, function()
                             local neutral=actor:IsA('/Script/Tempest.TedConformationBase')
                             if movementIO:isPresentationPawn(actor) and not movementIO:isDead(actor) and (neutral or actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and not (movementIO.absent and movementIO.absent[name]) and not actor:IsInContainer() then
                                 local first=not viewerActors[name]
-                                if first or actor.bHidden then
+                                if first or actor.bHidden or hudVisibilityRefresh then
                                     actor:K2_SetDefaultVisibility(true,true)
                                     actor:K2_OnVisibilityChanged(true)
                                 end
@@ -905,6 +929,7 @@ gameLoop(1000, function()
                                 end
                             end
                         end
+                        hudVisibilityRefresh=false
                     end
                 end
             elseif mode == 'record' then
