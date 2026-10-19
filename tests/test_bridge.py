@@ -664,7 +664,9 @@ class BridgeTests(unittest.TestCase):
           return oldFind(path)
         end
         unit.EcsActor={IsValid=function() return true end,TempestReplayEntityKey=2076}
-        unit.GetClass=function() return {GetFName=function() return FName('Tank_C') end} end
+        unit.GetClass=function() return {GetFName=function() return FName('Tank_C') end,
+          GetFullName=function() return 'Class Tank_C' end,ForEachFunction=function() end} end
+        unit.SetActorTickEnabled=function() end;unit.ReceiveOnDeath=function() end
         unit.GetOwningPlayerID=function() return 1 end
         unit.IsAlive=function() return true end;unit.IsInContainer=function() return false end
         unit.IsConstructing=function() return false end
@@ -749,7 +751,7 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("local _,run=localExecPre(nil,nil,' QUIT ');assert(run)")
         self.assertEqual((self.data/'shutdown.txt').read_text(),'session123')
 
-    def test_completion_montage_only_runs_on_transition_and_not_twice(self):
+    def test_production_queue_completion_never_replays_building_placement(self):
         self.start('play',replay='TestReplay')
         self.lua.globals().bridge=self.bridge
         self.lua.execute("""
@@ -762,7 +764,111 @@ class BridgeTests(unittest.TestCase):
           MeshComp={IsValid=v,GetAnimInstance=function() return anim end,SetComponentTickEnabled=function() end}}
         bridge:buildingVisuals(a,2);assert(plays==nil)
         bridge:buildingVisuals(a,1);bridge:buildingVisuals(a,2);bridge:buildingVisuals(a,2)
-        assert(plays==1)
+        assert(plays==nil)
+        """)
+
+    def test_reused_gdf_site_selects_zero_based_barracks_footprint_once(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function() return true end
+        local site={IsA=function(self,c) return c=='/Script/Tempest.TedConstructionSite' end,
+          ActiveFootprintConfig=0,FootprintConfigs={ForEach=function(self,fn)
+            fn(1,{get=function() return {GridSize={X=5,Y=6}} end})
+            fn(2,{get=function() return {GridSize={X=3,Y=6}} end}) end},
+          OnRep_ActiveFootprint=function() changed=(changed or 0)+1 end,
+          OnRep_ConstructionProgress=function() end}
+        LoadAsset=function() return {IsValid=v,GetCDO=function() return {StructureGridSize={X=3,Y=6}} end} end
+        bridge.catalog={site={segments={{time=23,last=40,target={time=40,class='BP_BD_GDF_Barracks_C'}}}}}
+        assert(bridge:siteVisuals(site,'site',{},30))
+        assert(site.ActiveFootprintConfig==1 and changed==1)
+        assert(site.LastConstructionProgress>0 and site.LastConstructionProgress<1)
+        bridge:siteVisuals(site,'site',{},31);assert(changed==1)
+        assert(not bridge:siteVisuals(site,'site',{},40))
+        """)
+
+    def test_match_end_flushes_pending_death_before_stopping_driver(self):
+        self.setup_online_companion();self.start()
+        self.lua.execute('began=true');self.tick();self.lua.execute('loops[100]()')
+        self.lua.execute("""
+        hooks['/Script/Tempest.TedPawn:ReceiveOnDeath']({get=function() return unit end})
+        local old=FindAllOf;FindAllOf=function(c) if c=='TedPawn' then return {} end;return old(c) end
+        replayTime=1;ended=true
+        """)
+        self.tick()
+        files=list((self.root/'Tempest/Saved/Demos').glob('*.movement'))
+        self.assertIn('D\t1',files[0].read_text())
+        self.assertTrue(files[0].read_text().endswith('E\n'))
+        self.assertEqual(self.commands()[-1],'demostop')
+
+    def test_direct_speed_keys_are_replay_only(self):
+        self.setup_input()
+        self.lua.execute('keybinds[0x34]()')
+        self.assertIsNone(self.lua.globals().worldSettings.DemoPlayTimeDilation)
+        self.lua.execute('replayPlaying=true;keybinds[0x34]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,4)
+        self.lua.execute('keybinds[0x32]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,2)
+        self.lua.execute('keybinds[0x31]()')
+        self.assertEqual(self.lua.globals().worldSettings.DemoPlayTimeDilation,1)
+
+    def test_dead_vehicle_and_aircraft_effects_run_once_even_with_native_death_bit(self):
+        self.start('play',replay='TestReplay')
+        self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        deaths=0
+        for _,name in ipairs({'Pillager','Aircraft','FlameTurret'}) do
+          local a={PawnDeath={bDied=true},GetFullName=function() return name end,
+            SetActorTickEnabled=function() end,ReceiveOnDeath=function() deaths=deaths+1 end}
+          bridge:deathVisuals(a,true);bridge:deathVisuals(a,true)
+        end
+        assert(deaths==3)
+        """)
+
+    def test_recorded_death_survives_actor_removal_before_next_snapshot(self):
+        self.setup_online_companion();self.start()
+        self.lua.execute('began=true');self.tick();self.lua.execute('loops[100]()')
+        self.lua.execute("""
+        hooks['/Script/Tempest.TedPawn:ReceiveOnDeath']({get=function() return unit end})
+        local old=FindAllOf;FindAllOf=function(c) if c=='TedPawn' then return {} end;return old(c) end
+        replayTime=1;loops[100]();isRecording=false;loops[100]()
+        """)
+        files=list((self.root/'Tempest/Saved/Demos').glob('*.movement'))
+        self.assertIn('D\t1',files[0].read_text())
+
+    def test_doctrine_hover_retains_overview_and_enables_child_icon_tooltips(self):
+        self.setup_input()
+        self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function() return true end
+        local cls={IsValid=v}
+        hoveringSource=true;hoveringPopup=false;hoveringIcon=false;removed=0;descriptions=0
+        source={IsValid=v,GetFullName=function() return 'Source' end,IsHovered=function() return hoveringSource end,
+          IsCustomTooltipShown=function() return false end,GetOwningPlayer=function() return pc end}
+        panel={IsValid=v,GetFullName=function() return 'Panel' end,SetVisibility=function() end,bResearchable=true}
+        icon={IsValid=v,GetDoctrinePanel=function() return panel end,CustomTooltipClass=cls,
+          IsHovered=function() return hoveringIcon end,GetTitle=function() return 'Hovered title' end,GetDescription=function() return 'Hovered description' end,
+          SetVisibility=function(self,x) self.visibility=x end,SetIsEnabled=function(self,x) self.enabled=x end}
+        tip={IsValid=v,GetFullName=function() return 'Clone' end,OnTooltipShown=function() end,AddToViewport=function() end,
+          SetVisibility=function() end,IsHovered=function() return hoveringPopup end,DoctrinePanelA=panel,
+          RemoveFromParent=function() removed=removed+1 end}
+        original={IsValid=v,SetVisibility=function(self,x) self.visibility=x end}
+        local library={IsValid=v,Create=function(self,owner,c)
+          if c==cls then descriptions=descriptions+1;return {IsValid=v,OnTooltipShown=function() end,
+            AddToViewport=function() end,SetVisibility=function() end,RemoveFromParent=function() removed=removed+1 end,
+            TextBlock_Name={IsValid=v,SetText=function(self,x) title=x end},
+            TextBlock_Description={IsValid=v,SetText=function(self,x) description=x end}} end
+          return tip end}
+        local old=StaticFindObject;StaticFindObject=function(p)
+          if p=='/Script/UMG.Default__WidgetBlueprintLibrary' then return library end;return old(p) end
+        local oldFind=FindAllOf;FindAllOf=function(c) if c=='TedDoctrineSlot' then return {icon} end;return oldFind(c) end
+        bridge:activateDoctrineTooltip(nil,source,original,{IsValid=v})
+        assert(original.visibility==2 and not panel.bResearchable and icon.enabled and icon.visibility==0)
+        hoveringSource=false;hoveringPopup=true;hoveringIcon=true
+        loops[50]();assert(descriptions==1 and removed==0 and title=='Hovered title' and description=='Hovered description')
+        for i=1,10 do loops[50]() end;assert(descriptions==1 and removed==0)
+        hoveringPopup=false;hoveringIcon=false
+        for i=1,5 do loops[50]() end;assert(removed==1)
+        loops[50]();assert(removed==2)
         """)
 
     def test_replay_menu_exit_ignores_hover_and_other_slots(self):

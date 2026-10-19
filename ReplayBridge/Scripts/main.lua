@@ -191,6 +191,7 @@ function movementIO:identity(actor)
 end
 function movementIO:close()
     self.animationFrames={}
+    self.viewerDoctrinePopup=nil
     self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
         self.writer:close();self.writer=nil
@@ -241,13 +242,14 @@ end
 function movementIO:record(subsystem,name,actors)
     if not self.codec or self.failed then return end
     if self.name~=name then
-        self:close();self.name=name;self.frames=0;self.units=0;self.recordedBuildings={}
+        self:close();self.name=name;self.frames=0;self.units=0;self.recordedBuildings={};self.recordedPawns={};self.pendingDeaths={}
         local path=os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..name..'.movement'
         self.writer=self.codec.writer(path,name)
         status('movement_recording','Local received unit movement companion: '..path)
     end
     local units,seen={},{}
     for _,actor in ipairs(actors) do
+        if valid(actor) then self:watchDeath(actor) end
         local structure=valid(actor) and actor:IsA('/Script/Tempest.TedStructureBase') and not actor:IsA('/Script/Tempest.TedConformationBase')
         local constructing=structure and actor:IsConstructing()
         if valid(actor) and not self:isDead(actor) and (actor:IsAlive() or constructing) and not actor:IsInContainer() then
@@ -262,6 +264,10 @@ function movementIO:record(subsystem,name,actors)
                     unit.building=constructing and 1 or 2
                     self.recordedBuildings[actor:GetFullName()]=unit
                 end
+                if actor:IsA('/Script/Tempest.TedConstructionSite') then
+                    unit.site={footprint=actor.ActiveFootprintConfig,progress=math.max(0,math.min(1,actor:GetConstructionProgress()))}
+                end
+                self.recordedPawns[actor:GetFullName()]=unit
                 units[#units+1]=unit
             end
         elseif valid(actor) and self.recordedBuildings[actor:GetFullName()] and self:isDead(actor) then
@@ -270,42 +276,120 @@ function movementIO:record(subsystem,name,actors)
             local key=self.codec.key(unit.class,unit.owner,unit.entity)
             if not seen[key] then unit.building=3;units[#units+1]=unit;seen[key]=true end
         end
+        if valid(actor) and self.recordedPawns[actor:GetFullName()] and self:isDead(actor) then
+            self.pendingDeaths[actor:GetFullName()]=self.recordedPawns[actor:GetFullName()]
+        end
+    end
+    for _,unit in pairs(self.pendingDeaths) do
+        local key=self.codec.key(unit.class,unit.owner,unit.entity)
+        unit.dead=true
+        if not seen[key] then units[#units+1]=unit;seen[key]=true
+        else
+            for _,present in ipairs(units) do
+                if self.codec.key(present.class,present.owner,present.entity)==key then present.dead=true;break end
+            end
+        end
     end
     self.writer:frame(subsystem:GetReplayCurrentTime(),units)
     self.frames=self.writer.frames;self.units=#units
     if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
+end
+function movementIO:watchDeath(actor)
+    self.deathHooks=self.deathHooks or {};self.deathPresented=self.deathPresented or {}
+    local function install(path)
+        if self.deathHooks[path] then return end
+        self.deathHooks[path]=true
+        local ok,err=pcall(RegisterHook,path,function(context)
+            local pawn=context:get();if not valid(pawn) then return end
+            local name=pawn:GetFullName()
+            if mode=='record' and self.recordedPawns and self.recordedPawns[name] then
+                self.pendingDeaths[name]=self.recordedPawns[name]
+            elseif mode=='play' then self.deathPresented[name]=true end
+        end)
+        if not ok then status('death_hook_error',path..': '..tostring(err)) end
+    end
+    install('/Script/Tempest.TedPawn:ReceiveOnDeath')
+    local cls=actor:GetClass()
+    if self.deathHooks[cls:GetFullName()] then return end
+    self.deathHooks[cls:GetFullName()]=true
+    cls:ForEachFunction(function(fn)
+        if fn:GetFName():ToString()=='ReceiveOnDeath' then
+            install(cls:GetFullName():gsub('^BlueprintGeneratedClass ',''):gsub('^Class ','')..':ReceiveOnDeath')
+        end
+    end)
+end
+function movementIO:deathVisuals(actor,dead)
+    if not dead then return end
+    self.visualDeaths=self.visualDeaths or {};self.deathPresented=self.deathPresented or {}
+    local name=actor:GetFullName()
+    if not self.deathPresented[name] then
+        if self.absent and self.absent[name] then actor:SetActorHiddenInGame(false);self.absent[name]=nil end
+        actor:SetActorTickEnabled(true)
+        local mesh=actor.MeshComp
+        if valid(mesh) then mesh:SetComponentTickEnabled(true) end
+        -- Native death state and cosmetic delivery are separate: bDied can be
+        -- replicated even though the Blueprint effect never ran in this demo.
+        self.deathPresented[name]=true
+        actor:ReceiveOnDeath()
+    end
+    self.visualDeaths[name]=true
 end
 function movementIO:buildingVisuals(actor,state)
     if not actor:IsA('/Script/Tempest.TedStructureBase') or actor:IsA('/Script/Tempest.TedConformationBase') then return end
     self.buildingStates=self.buildingStates or {};self.visualDeaths=self.visualDeaths or {}
     local name=actor:GetFullName()
     if state==3 then
-        if not self:isDead(actor) then
-            actor:SetActorTickEnabled(true)
-            actor:ReceiveOnDeath() -- cosmetic event only; never damage/RPC/death simulation
-            self.visualDeaths[name]=true
-        end
+        self:deathVisuals(actor,true)
         self.buildingStates[name]=3
     elseif not self:isDead(actor) then
         local value=state or (actor:IsConstructing() and 1 or 2)
         if self.buildingStates[name]~=value then
             actor:SetActorTickEnabled(true)
             actor:ReceiveHandleConstructionVisuals(value==1)
-            if self.buildingStates[name]==1 and value==2 then
-                local mesh=actor.MeshComp;local montage=actor.SpawnAnimation
-                if valid(mesh) and valid(montage) then
-                    local anim=mesh:GetAnimInstance()
-                    if valid(anim) and not anim:Montage_IsPlaying(montage) then
-                        -- Only the recorded completion transition; no replay-start
-                        -- animation for every pre-existing building or speed override.
-                        mesh:SetComponentTickEnabled(true)
-                        anim:Montage_Play(montage,1,0,0,false)
-                    end
-                end
-            end
+            -- IsConstructing describes the factory's production queue. Finishing
+            -- a queue item must never replay the producer's placement montage.
             self.buildingStates[name]=value
         end
     end
+end
+function movementIO:siteVisuals(actor,key,sample,time)
+    if not actor:IsA('/Script/Tempest.TedConstructionSite') then return true end
+    local state=sample.site
+    local catalog=self.catalog and self.catalog[key]
+    if catalog then
+        for _,segment in ipairs(catalog.segments) do
+            if time>=segment.time and time<=segment.last+0.5 and segment.target then
+                if time>=segment.target.time then return false end
+                if not state then
+                    local c=segment.target.class
+                    if c:match('^BP_BD_GDF_') then
+                        self.siteClasses=self.siteClasses or {}
+                        if self.siteClasses[c]==nil then
+                            local asset=c:gsub('_C$','')
+                            self.siteClasses[c]=LoadAsset('/Game/Tempest/GDF/Structures/'..asset..'.'..c)
+                        end
+                        local cls=self.siteClasses[c]
+                        if valid(cls) then
+                            local grid=cls:GetCDO().StructureGridSize;local selected
+                            actor.FootprintConfigs:ForEach(function(i,entry)
+                                local size=entry:get().GridSize
+                                if size.X==grid.X and size.Y==grid.Y then selected=i-1 end
+                            end)
+                            if selected then state={footprint=selected,progress=math.min(0.99,(time-segment.time)/(segment.target.time-segment.time))} end
+                        end
+                    end
+                end
+                break
+            end
+        end
+    end
+    if state then
+        if actor.ActiveFootprintConfig~=state.footprint then
+            actor.ActiveFootprintConfig=state.footprint;actor:OnRep_ActiveFootprint()
+        end
+        actor.LastConstructionProgress=state.progress;actor:OnRep_ConstructionProgress()
+    end
+    return true
 end
 function movementIO:play(subsystem)
     self.animationFrames={}
@@ -313,7 +397,9 @@ function movementIO:play(subsystem)
     if not self.codec or self.failed then return end
     if not self.opened then
         self.opened=true
-        self.reader=self.codec.reader(os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..replay..'.movement',replay)
+        local path=os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..replay..'.movement'
+        self.catalog=self.codec.catalog(path,replay)
+        self.reader=self.codec.reader(path,replay)
         if self.reader then status('movement_playback','Applying received unit transforms from '..replay..'.movement')
         else status('movement_missing','No movement companion; using native replay data only') end
     end
@@ -327,6 +413,9 @@ function movementIO:play(subsystem)
     local candidates={}
     for _,actor in ipairs(FindAllOf('TedPawn') or {}) do
         if valid(actor) and not actor:IsInContainer() then
+            self:watchDeath(actor)
+            local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
+            if ok and dead then self:deathVisuals(actor,true) end
             local name=actor:GetFullName()
             if self:isPresentationPawn(actor) then
                 -- Unbound actors can initially have an unreplicated spawn pose.
@@ -343,8 +432,9 @@ function movementIO:play(subsystem)
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
+        if actor then self:deathVisuals(actor,sample.dead or sample.building==3) end
         if actor then self:buildingVisuals(actor,sample.building) end
-        if actor and not self:isDead(actor) then
+        if actor and not self:isDead(actor) and self:siteVisuals(actor,key,sample,time) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if not self.visible or not self.visible[name] then
                 actor:K2_SetDefaultVisibility(true,true)
@@ -401,7 +491,7 @@ function movementIO:updateMarkers(actors,samples)
                 local origin=widget.MinimapImage.Slot:GetPosition()
                 for key,actor in pairs(actors) do
                     local sample=samples[key]
-                    if sample and not actor:IsAlive() and not self:isDead(actor) then
+                    if sample and not actor:IsAlive() and not self:isDead(actor) and not (self.absent and self.absent[actor:GetFullName()]) then
                         seen[key]=true
                         local pin=pins[key]
                         if not valid(pin) then
@@ -534,6 +624,113 @@ local function liveWidgets(className, action)
         if valid(widget) and widget:GetFullName():find('/Engine/Transient',1,true) then action(widget) end
     end
 end
+function movementIO:clearDoctrinePopup()
+    local h=self.viewerDoctrinePopup
+    self.viewerDoctrinePopup=nil
+    if not h then return end
+    if valid(h.description) then h.description:RemoveFromParent() end
+    if valid(h.tip) then h.tip:RemoveFromParent() end
+end
+function movementIO:activateDoctrineTooltip(hud,source,original,cls)
+    if self.creatingDoctrine or not valid(source) or not source:IsHovered() then return end
+    local previous=self.viewerDoctrinePopup
+    if previous and valid(previous.source) and previous.source:GetFullName()==source:GetFullName() then
+        original:SetVisibility(2);return
+    end
+    self:clearDoctrinePopup()
+    local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+    if not valid(library) then return end
+    self.creatingDoctrine=true
+    local tip=library:Create(source:GetOwningPlayer(),cls,source:GetOwningPlayer())
+    tip.TargetWidget=source
+    tip.DesiredDisplayParams=original.DesiredDisplayParams
+    tip:OnTooltipShown()
+    self.creatingDoctrine=false
+    tip:AddToViewport(100);tip:SetVisibility(4)
+    tip.bTrackAsWidgetUnderCursor=true
+    if valid(tip.Root_SizeBox) then tip.Root_SizeBox:SetVisibility(4) end
+    local panels,icons={},{}
+    for _,name in ipairs({'DoctrinePanelA','DoctrinePanelB','DoctrinePanelC'}) do
+        local panel=tip[name]
+        if valid(panel) then
+            panel.bResearchable=false;panel:SetVisibility(4)
+            panels[panel:GetFullName()]=true
+        end
+    end
+    for _,slot in ipairs(FindAllOf('TedDoctrineSlot') or {}) do
+        if valid(slot) then
+            local panel=slot:GetDoctrinePanel()
+            if valid(panel) and panels[panel:GetFullName()] then
+                slot:SetVisibility(0);slot:SetIsEnabled(true)
+                slot.bTrackAsWidgetUnderCursor=true
+                icons[#icons+1]=slot
+            end
+        end
+    end
+    original:SetVisibility(2)
+    self.viewerDoctrinePopup={source=source,tip=tip,icons=icons,misses=0}
+end
+function movementIO:installDoctrineHover()
+    if not self.doctrineHook then
+        self.doctrineHook=true
+        gameLoop(50,function()
+            if viewerStopped or travelling then self:clearDoctrinePopup();return viewerStopped end
+            local h=self.viewerDoctrinePopup
+            if h then
+                if not valid(h.source) or not valid(h.tip) then self:clearDoctrinePopup();return false end
+                local hovered
+                for _,icon in ipairs(h.icons) do if valid(icon) and icon:IsHovered() then hovered=icon;break end end
+                if h.source:IsHovered() or h.tip:IsHovered() or hovered then h.misses=0 else h.misses=h.misses+1 end
+                if hovered~=h.icon then
+                    if valid(h.description) then h.description:RemoveFromParent() end
+                    h.description=nil;h.icon=hovered
+                    if hovered and valid(hovered.CustomTooltipClass) then
+                        local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
+                        local description=library:Create(h.source:GetOwningPlayer(),hovered.CustomTooltipClass,h.source:GetOwningPlayer())
+                        description.TargetWidget=hovered
+                        description.DesiredDisplayParams=hovered.CustomTooltipDefaultDisplayParams
+                        description:OnTooltipShown()
+                        -- This tooltip's native content cache is initialized for
+                        -- the player's own doctrine tree. Read the actual hovered
+                        -- spectator slot instead of displaying that stale cache.
+                        if valid(description.TextBlock_Name) then description.TextBlock_Name:SetText(hovered:GetTitle()) end
+                        if valid(description.TextBlock_Description) then description.TextBlock_Description:SetText(hovered:GetDescription()) end
+                        if valid(description.Image_Icon) and valid(hovered.Image_Icon) then description.Image_Icon:SetBrush(hovered.Image_Icon.Brush) end
+                        if valid(description.TextBlock_CostValue_Credits) then description.TextBlock_CostValue_Credits:SetText(FText(tostring(hovered:GetResearchCostCredits()))) end
+                        if valid(description.TextBlock_CostValue_Time) then description.TextBlock_CostValue_Time:SetText(FText(tostring(hovered:GetResearchTime()))) end
+                        if valid(description.Panel_ExtendedDescriptions) then description.Panel_ExtendedDescriptions:SetVisibility(2) end
+                        if valid(description.ExtendedDescriptionsSeparator) then description.ExtendedDescriptionsSeparator:SetVisibility(2) end
+                        description:AddToViewport(101);description:SetVisibility(3)
+                        h.description=description
+                    end
+                end
+                if h.misses>=6 then self:clearDoctrinePopup() end
+            else
+                local subsystem=FindFirstOf('ReplaySubsystem')
+                if not valid(subsystem) or not subsystem:IsPlaying() then return false end
+                for _,tip in ipairs(FindAllOf('WBP_ThirdPartySpectator_Doctrines_Tooltip_C') or {}) do
+                    if valid(tip) and tip:IsInViewport() then
+                        local source=tip:GetTargetWidget()
+                        if valid(source) and source:IsHovered() and source:IsCustomTooltipShown() then
+                            self:activateDoctrineTooltip(source:GetHUD(),source,tip,source.CustomTooltipClass);break
+                        end
+                    end
+                end
+            end
+            return false
+        end)
+    end
+    local path='/Game/Tempest/UI/ThirdPartySpectator/DoctrinesWidget/WBP_ThirdPartySpectator_Doctrines_Tooltip.WBP_ThirdPartySpectator_Doctrines_Tooltip_C:OnTooltipShown'
+    if not self.doctrineShownHook and valid(StaticFindObject(path)) then
+        self.doctrineShownHook=true
+        RegisterHook(path,function(context)
+            if viewerStopped or travelling or self.creatingDoctrine then return end
+            local tip=context:get();if not valid(tip) then return end
+            local source=tip:GetTargetWidget()
+            if valid(source) then self:activateDoctrineTooltip(source:GetHUD(),source,tip,source.CustomTooltipClass) end
+        end)
+    end
+end
 local function finishReplay(pc)
     if viewerFinished then return end
     viewerFinished=true;followTarget=nil
@@ -558,6 +755,7 @@ local function finishReplay(pc)
     status('viewer_finished','리플레이 종료 · 저장된 마지막 시점. 승패 정보가 없는 파일에서는 결과를 추정하지 않습니다.'..(ok and '' or ' / banner: '..tostring(err)))
 end
 local function configureViewer(pc)
+    movementIO:installDoctrineHover()
     pc.bShowMouseCursor = true
     pc.bEnableClickEvents = true
     pc.bEnableMouseOverEvents = true
@@ -594,6 +792,7 @@ local function configureViewer(pc)
     end)
 end
 if mode == 'play' then
+    movementIO:installDoctrineHover()
     local function bind(key, action)
         RegisterKeyBind(key, function()
             ExecuteInGameThread(function()
@@ -644,6 +843,7 @@ if mode == 'play' then
     end
     local hudHidden=false
     bind(Key.U,function()
+        movementIO:clearDoctrinePopup()
         local panels={{'VerticalBox_Minimap','MinimapShow_ButtonClick'},
             {'PlayerInfoPanel','PlayerListShow_ButtonClick'},{'StatsOverview','SingularStatShow_ButtonClick'}}
         liveWidgets('TedThirdPartySpectatorHud',function(widget)
@@ -687,6 +887,11 @@ if mode == 'play' then
         for i,speed in ipairs(speeds) do if speed==viewerSpeed then index=i end end
         setViewerSpeed(pc,speeds[index % #speeds + 1])
     end)
+    for _,speed in ipairs({1,2,4}) do
+        bind(0x30+speed,function(pc)
+            if not viewerFinished then setViewerSpeed(pc,speed) end
+        end)
+    end
     bind(Key.F8,function(pc) if not viewerFinished then command(pc,'demopause') end end)
     local inputPending, inputErrors, mouseWasDown = false, 0, false
     gameLoop(16,function()
@@ -962,6 +1167,13 @@ gameLoop(1000, function()
                 end
                 if not isMatch then return end
                 if ended and recordingWorld == key then
+                    if movementIO.writer then
+                        local ok,err=pcall(function()
+                            local subsystem=FindFirstOf('ReplaySubsystem')
+                            if valid(subsystem) and subsystem:IsRecording() then movementIO:record(subsystem,recordingName,FindAllOf('TedPawn') or {}) end
+                        end)
+                        if not ok then status('movement_error',tostring(err)) end
+                    end
                     movementIO:close(); command(pc, 'demostop'); recordingWorld = nil
                     status('stop_requested', 'Match ended; verify final replay file')
                 elseif began and not ended and recordingWorld ~= key then

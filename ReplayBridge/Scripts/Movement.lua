@@ -37,7 +37,7 @@ end
 function M.writer(path,name)
     assert(token(name),'Invalid replay name')
     local f=assert(io.open(path,'wb'))
-    assert(f:write('TEMPEST_MOVEMENT\t2\t'..name..'\n'));assert(f:flush())
+    assert(f:write('TEMPEST_MOVEMENT\t3\t'..name..'\n'));assert(f:flush())
     local w={file=f,ids={},count=0,frames=0,last=-1}
     function w:frame(time,units)
         assert(finite(time) and time>=0 and time>=self.last,'Movement clock went backwards')
@@ -60,6 +60,11 @@ function M.writer(path,name)
                 assert(u.building==1 or u.building==2 or u.building==3,'Invalid building state')
                 rows[#rows+1]=string.format('B\t%d\t%d\n',id,u.building)
             end
+            if u.dead then rows[#rows+1]='D\t'..id..'\n' end
+            if u.site then
+                assert(finite(u.site.footprint) and u.site.footprint%1==0 and u.site.footprint>=0 and u.site.footprint<256 and finite(u.site.progress) and u.site.progress>=0 and u.site.progress<=1,'Invalid construction site')
+                rows[#rows+1]=string.format('C\t%d\t%d\t%.6f\n',id,u.site.footprint,u.site.progress)
+            end
         end
         assert(self.file:write(table.concat(rows)));assert(self.file:flush())
         self.last=time;self.frames=self.frames+1
@@ -74,7 +79,8 @@ end
 function M.reader(path,name)
     local f=io.open(path,'rb');if not f then return nil end
     local header=(f:read('*l') or ''):gsub('\r$','')
-    local version=header=='TEMPEST_MOVEMENT\t1\t'..name and 1 or (header=='TEMPEST_MOVEMENT\t2\t'..name and 2)
+    local version
+    for i=1,3 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
     if not version then f:close();error('Movement companion header/name mismatch') end
     local r={file=f,definitions={},identities={},tracks={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
@@ -103,8 +109,16 @@ function M.reader(path,name)
             elseif a[1]=='B' then
                 local id,state=tonumber(a[2]),tonumber(a[3]);local key=id and self.definitions[id]
                 local unit=frame and key and frame.units[key]
-                assert(version==2 and #a==3 and unit and not unit.building and (state==1 or state==2 or state==3),'Invalid building state record')
+                assert(version>=2 and #a==3 and unit and not unit.building and (state==1 or state==2 or state==3),'Invalid building state record')
                 unit.building=state
+            elseif a[1]=='D' then
+                local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
+                assert(version==3 and #a==2 and unit and not unit.dead,'Invalid death record');unit.dead=true
+            elseif a[1]=='C' then
+                local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
+                local footprint,progress=tonumber(a[3]),tonumber(a[4])
+                assert(version==3 and #a==4 and unit and not unit.site and finite(footprint) and footprint%1==0 and footprint>=0 and footprint<256 and finite(progress) and progress>=0 and progress<=1,'Invalid construction site record')
+                unit.site={footprint=footprint,progress=progress}
             elseif a[1]=='E' and #a==1 then self:close();return frame
             else error('Invalid movement record') end
         end
@@ -126,13 +140,52 @@ function M.reader(path,name)
             if v then
                 local p,q=u.position,v.position;local x,y=u.rotation,v.rotation
                 result[key]={position={X=blend(p.X,q.X,alpha),Y=blend(p.Y,q.Y,alpha),Z=blend(p.Z,q.Z,alpha)},
-                    building=u.building,velocity=M.velocity(p,q,b.time-a.time),
+                    building=u.building,dead=u.dead,site=u.site,velocity=M.velocity(p,q,b.time-a.time),
                     rotation={Pitch=angle(x.Pitch,y.Pitch,alpha),Yaw=angle(x.Yaw,y.Yaw,alpha),Roll=angle(x.Roll,y.Roll,alpha)}}
-            else result[key]={position=u.position,rotation=u.rotation,building=u.building,velocity={X=0,Y=0,Z=0}} end
+            else result[key]={position=u.position,rotation=u.rotation,building=u.building,dead=u.dead,site=u.site,velocity={X=0,Y=0,Z=0}} end
         end
         return result
     end
     return r
+end
+-- Construction-site actors are reused for different products and positions.
+-- Index each stationary segment, then resolve only a unique completed structure
+-- at that position. This recovers old v1/v2 files without guessing build order.
+function M.catalog(path,name)
+    local reader=M.reader(path,name);if not reader then return {} end
+    local tracks={}
+    while true do
+        local frame=reader:nextFrame();if not frame then break end
+        for key,u in pairs(frame.units) do
+            local t=tracks[key]
+            if not t then
+                local d=reader.tracks[key]
+                t={class=d.class,owner=d.owner,time=frame.time,position=u.position,segments={}};tracks[key]=t
+            end
+            t.last=frame.time;t.building=t.building or u.building~=nil
+            if t.class:find('ConstructionSite',1,true) then
+                local s=t.segments[#t.segments];local p=u.position
+                if not s or (s.position.X-p.X)^2+(s.position.Y-p.Y)^2>1 then
+                    s={time=frame.time,position=p};t.segments[#t.segments+1]=s
+                end
+                s.last=frame.time
+            end
+        end
+    end
+    for _,site in pairs(tracks) do
+        for _,s in ipairs(site.segments) do
+            local matches={}
+            for _,target in pairs(tracks) do
+                local p,q=s.position,target.position
+                if target.building and not target.class:find('ConstructionSite',1,true) and target.owner==site.owner and
+                   target.time>s.time and target.time<=s.last+0.5 and (p.X-q.X)^2+(p.Y-q.Y)^2+(p.Z-q.Z)^2<=200^2 then
+                    matches[#matches+1]=target
+                end
+            end
+            if #matches==1 then s.target=matches[1] end
+        end
+    end
+    return tracks
 end
 -- Entity handles are local runtime IDs, not stable replay IDs. Bind by a unique
 -- class/owner/initial pose match, then retain the same actor for that track.

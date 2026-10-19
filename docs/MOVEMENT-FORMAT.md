@@ -1,12 +1,12 @@
-# Movement companion v1/v2
+# Movement companion v1/v2/v3
 
 The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Unreal replay and cannot be played independently. Store it beside the same-named `.replay` file. The generated replay basename binds the pair. Do not rename one file independently.
 
-- Header: `TEMPEST_MOVEMENT<TAB>2<TAB>basename` for new recordings; readers also accept v1.
+- Header: `TEMPEST_MOVEMENT<TAB>3<TAB>basename` for new recordings; readers also accept v1/v2.
 - `F<TAB>nativeReplaySeconds` begins a full snapshot. Times increase monotonically.
 - `U<TAB>localID<TAB>unitClass<TAB>ownerID<TAB>entityKey` defines an identity once.
 - `P<TAB>localID<TAB>X<TAB>Y<TAB>Z<TAB>Pitch<TAB>Yaw<TAB>Roll` records a received transform.
-- Optional v2 `B<TAB>localID<TAB>state` follows a P record: 1 constructing, 2 completed, 3 explicitly dead. States are discrete, never interpolated; each sample permits one state. Construction can precede native IsAlive. Death requires an observed native PawnDeath flag, never absence.
+- Optional v2 `B<TAB>localID<TAB>state` follows a P record: 1 production queue active, 2 queue idle, 3 explicitly dead. Earlier writers mislabeled IsConstructing as placement construction. It actually describes factory production; never trigger a placement montage when this queue becomes idle. States are discrete, never interpolated; each sample permits one state. Construction can precede native IsAlive. Death requires an observed native PawnDeath flag, never absence.
 - `E` finalizes the file. Completed, flushed frames remain usable if the process stopped without a trailer.
 
 The native bridge reads the first IntProperty-sized word at NubECS.EcsActorComponent.EntityHandle through a read-only custom property alias resolved by reflection. This build exposes the handle as a native serialized struct with no reflected fields. The prefix is combined with class and owner to identify tracks within this recording; duplicate simultaneous identities are rejected. Native testing in v0.3.8 demonstrated that these handles are NOT stable between recording and playback. Playback ignores their numeric equality and binds tracks to a unique actor of the same class and owner within 200 Unreal units of its first recorded pose. Equal/competing candidates are rejected; established bindings persist instead of being recomputed from moving positions. Identical co-located spawns may remain unmatched.
@@ -20,3 +20,8 @@ The pure data codec and mocked online-client integration tests do not by themsel
 Client demos in the tested build restore zero health/max-health and IsAlive=false for actors that were actually alive. Snapshot presence is therefore the source of truth for supplemented actor visibility. Absence hides previously supplemented actors and suppresses the generic visibility initializer. This does not fabricate health or repair missing gameplay attributes; health bars, selection and other ECS-dependent UI may remain incomplete. Building presence is captured as well as mobile units.
 
 v0.3.9 additionally derives presentation velocity from adjacent position samples, using replay-time seconds. This does not change the file format or writer. A last/unpaired sample has zero velocity; discontinuities exceeding 10,000 Unreal units per second are treated as teleports for animation only. Position playback remains unchanged. Minimap supplementation uses the same matched/present targets and native map projection, without fabricating health or recording new network data.
+
+
+v3 additionally supports one optional `D<TAB>localID` per pose for explicit native death of any pawn type, and one `C<TAB>localID<TAB>footprintIndex<TAB>progress` for construction sites. Footprint index is a zero-based integer 0..255; progress is finite 0..1. These values are discrete. A death hook retains the last plain pose if the native actor vanishes before the next snapshot. The final match-end snapshot flushes pending deaths before stopping the native driver. No server damage/death/RPC is invoked.
+
+For old companions, a construction-site track is split when its location changes, then matched only to a unique future completed structure of the same owner within 200 Unreal units. Its class default StructureGridSize selects the site's matching footprint (UE array iteration is one-based; the native active index is zero-based). Ambiguous matches are left alone. New files use the observed footprint and progress directly. A metadata scan builds this catalog; transforms remain streamed through two frames.

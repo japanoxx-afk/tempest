@@ -41,6 +41,30 @@ class MovementTests(unittest.TestCase):
         self.path.write_text('TEMPEST_MOVEMENT\t2\tTest\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t0\t0\t0\t0\t0\nB\t1\t4\nE\n')
         with self.assertRaises(LuaError): self.lua.execute("r=M.reader(path,'Test');r:at(0)")
 
+    def test_v3_death_and_site_state_are_discrete(self):
+        self.lua.execute("""
+        w=M.writer(path,'Test');u=unit(0);u.site={footprint=6,progress=0.2};w:frame(0,{u})
+        u.dead=true;u.site={footprint=9,progress=0.8};w:frame(1,{u});w:close()
+        r=M.reader(path,'Test');local a=r:at(0.9)['Tank_C:1:2076'];assert(not a.dead and a.site.footprint==6)
+        local b=r:at(1)['Tank_C:1:2076'];assert(b.dead and b.site.footprint==9)
+        """)
+
+    def test_catalog_resolves_reused_site_by_position_segment(self):
+        self.lua.execute("""
+        w=M.writer(path,'Test')
+        s=unit(0,0,1);s.class='BP_GDF_ConstructionSite_C';s.building=2
+        a=unit(0,0,2);a.class='Power_C';a.building=2
+        b=unit(1000,0,3);b.class='Barracks_C';b.building=2
+        w:frame(0,{s});w:frame(1,{s,a});s.position.X=1000
+        w:frame(2,{s,a});w:frame(3,{s,a,b});w:close()
+        local c=M.catalog(path,'Test')['BP_GDF_ConstructionSite_C:1:1']
+        assert(#c.segments==2 and c.segments[1].target.class=='Power_C' and c.segments[2].target.class=='Barracks_C')
+        """)
+
+    def test_legacy_file_rejects_new_death_record(self):
+        self.path.write_text('TEMPEST_MOVEMENT\t2\tTest\nF\t0\nU\t1\tTank_C\t1\t1\nP\t1\t0\t0\t0\t0\t0\t0\nD\t1\nE\n')
+        with self.assertRaises(LuaError): self.lua.execute("r=M.reader(path,'Test');r:at(0)")
+
     def test_replay_duration_reads_custom_version_container(self):
         self.path.write_bytes(struct.pack('<III',0x1ca2e27f,7,1)+bytes(16)+struct.pack('<II',7,217047))
         self.assertAlmostEqual(self.lua.globals().M.duration(str(self.path)),217.047)
