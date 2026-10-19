@@ -211,3 +211,16 @@ Final production-only session 97c3fb42eece45d5a5721b2a57d1c254 (PID 36596, start
 95 Python codec/bridge tests cover v1/v2/v3 compatibility, reused-site disambiguation and zero-based footprint selection, no placement montage on factory completion, one-shot generic pawn death effects, death persistence after actor removal and final match-end flushing, replay-only 1/2/4 controls and doctrine popup lifecycle/content. PowerShell library/exit tests and packaging passed.
 
 The final production session reached viewer_finished and displayed the terminal banner. No new crash directory was created; the newest remained the diagnostic 13:33:07 report.
+
+
+## v0.3.15 — confirmed replay exit and competing doctrine tooltips
+
+2026-10-19: the native menu's Quit popup uses two WBP_Popup_Buttons_Slot controls (Cancel index 0, Confirm index 1). The actual TriggerAction event was observed on native cancel input. Confirmation handling now validates the local pause menu, its cached popup, exact parent button panel, two-slot count and action 0 before scheduling local exit/travel after delegate dispatch. The menu's slot action also arms paths where the native handler bypasses ProcessEvent. Cancellation disarms the request; unrelated popup buttons cannot close the replay.
+
+Native diagnostics found that assigning Lua nil to CustomTooltipClass left the UClass property valid. Assigning a null UObject wrapper returned by an unresolved StaticFindObject cleared it. Read-only cloned doctrine slots now retain the class separately for their own detail window and disable the native automatic tooltip. A 10-second native sample returned description_instances=1 and native_automatic_tooltips=false while the hovered description stayed visible. The prior 20-second sample completed before icon hover and is not evidence of detail stability. Short gaps in icon hover now have a three-tick grace (150ms); popup closure still uses its 300ms grace.
+
+Diagnostic session e995c42925ce4aafa72c5f28754865d3 reproduced the exact Korean 'Exit game?' popup via the native pause-menu quit handler. A real click on Confirm produced the local quit signal. The app window closed and the session-bound watcher removed the remaining process after its 8-second grace. exit-cleanup.txt matched that session. Main-menu popup cancellation was also exercised and left the replay active. Diagnostic samplers and popup setup are not included in the shipped bridge.
+
+96 Python tests pass, including deferred confirmed exit, cancellation, hover/non-click rejection, unrelated-popup rejection, direct-menu fallback, null tooltip class and transient icon hover gaps. PowerShell library/exit tests pass.
+
+Final production-only session 0bbf84d418524094a4c3a5b6c7f7257c used source-matching installed scripts without the diagnostic harness. At viewer_finished (5:06), real pause-menu Main Menu input opened its confirmation rather than travelling immediately. Clicking Confirm released viewer callbacks and loaded MAP_MainMenu_P successfully. The main menu Exit popup was then confirmed through actual UI input.

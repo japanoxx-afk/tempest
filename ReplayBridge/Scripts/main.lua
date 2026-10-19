@@ -550,9 +550,11 @@ local configuredWidgets = {}
 local viewerControllerName
 local viewerFinished=false
 local replayDuration
+local pendingExitMenu,pendingExitShutdown,confirmedExitQueued
 local function stopViewer(reason)
     if viewerStopped then return end
     viewerStopped = true
+    pendingExitMenu=nil
     followTarget = nil
     configuredWidgets = {}
     movementIO:close()
@@ -567,6 +569,7 @@ local function exitViewer(closeApplication)
     stopViewer('Replay exit requested; callbacks released')
     -- Use local engine exit/travel without depending on live-match surrender
     -- acknowledgement, including when the replay is paused at EOF.
+    if closeApplication then write(home..'shutdown.txt',session) end
     command(pc,closeApplication and 'exit' or 'open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
 end
 if mode == 'play' then
@@ -582,13 +585,14 @@ if mode == 'play' then
     -- A spectator has no live server to acknowledge the game's normal shutdown
     -- request. Clear our paused end state and use the engine's local quit path.
     RegisterHook('/Script/Tempest.TedPlayerController:ExitCurrentGame',function(context,shutdown)
-        if not viewerInitialized or viewerStopped then return end
+        if not viewerInitialized or viewerStopped or confirmedExitQueued then return end
         local pc=context:get();local localPC=getLocalPlayerController()
         if not valid(pc) or not valid(localPC) or pc:GetFullName()~=localPC:GetFullName() then return end
         exitViewer(shutdown:get())
     end)
     -- Native menu handling does not call ExitCurrentGame through ProcessEvent.
-    -- Recognize only the two exit slots on a replay's own pause menu.
+    -- Quit/surrender open a native confirmation first. Do not tear down the
+    -- viewer until that exact popup receives its confirm action.
     RegisterHook('/Script/Tempest.TedPauseMenuScreen:OnPauseMenuButtonSlotAction',function(context,panel,slot,action)
         if not viewerInitialized or viewerStopped or action:get()~=0 then return end
         local menu=context:get();local selected=slot:get()
@@ -596,7 +600,46 @@ if mode == 'play' then
         local name=selected:GetFullName()
         local quit=valid(menu.Slot_Quit) and name==menu.Slot_Quit:GetFullName()
         local main=valid(menu.Slot_MainMenu) and name==menu.Slot_MainMenu:GetFullName()
-        if quit or main then exitViewer(quit) end
+        local surrender=valid(menu.Slot_RestartOrSurrender) and name==menu.Slot_RestartOrSurrender:GetFullName()
+        pendingExitMenu=nil
+        if main or quit or surrender then
+            pendingExitMenu=menu;pendingExitShutdown=quit
+            status('viewer_exit_confirmation','Waiting for replay exit confirmation')
+        end
+    end)
+    RegisterHook('/Script/Tempest.TedContentPanelSlotBase:TriggerAction',function(context,action)
+        if not viewerInitialized or viewerStopped or confirmedExitQueued or action:get()~=0 then return end
+        local slot=context:get();if not valid(slot) then return end
+        local pc=getLocalPlayerController();if not valid(pc) then return end
+        -- Some Blueprint menu paths call the native handler directly. The slot
+        -- action itself still passes through ProcessEvent, so arm that path too.
+        local name=slot:GetFullName()
+        for _,menu in ipairs(FindAllOf('TedPauseMenuScreen') or {}) do
+            if valid(menu) then
+                local owner=menu:GetOwningPlayer()
+                if valid(owner) and owner:GetFullName()==pc:GetFullName() then
+                    for _,field in ipairs({'Slot_Quit','Slot_MainMenu','Slot_RestartOrSurrender'}) do
+                        if valid(menu[field]) and menu[field]:GetFullName()==name then
+                            pendingExitMenu=menu;pendingExitShutdown=field=='Slot_Quit';return
+                        end
+                    end
+                end
+            end
+        end
+        if not valid(pendingExitMenu) then return end
+        local popup=pendingExitMenu:GetPauseMenuPopup()
+        local panel=slot:GetParentContentPanel()
+        if not valid(popup) or not popup:IsVisible() or not valid(panel) or not valid(popup.ButtonsPanel) or
+           panel:GetFullName()~=popup.ButtonsPanel:GetFullName() or panel:GetContentSlotsCount()~=2 then return end
+        local owner=pendingExitMenu:GetOwningPlayer();local pc=getLocalPlayerController()
+        if not valid(owner) or not valid(pc) or owner:GetFullName()~=pc:GetFullName() then return end
+        local index=slot:GetSlotIndex()
+        if index==0 then pendingExitMenu=nil;return end -- native Cancel
+        if index~=1 then return end -- native Confirm
+        local shutdown=pendingExitShutdown
+        pendingExitMenu=nil;confirmedExitQueued=true
+        -- Complete native button/delegate dispatch before quitting/travelling.
+        gameLoop(1,function() exitViewer(shutdown);return true end)
     end)
     RegisterLoadMapPreHook(function()
         travelling = true
@@ -649,7 +692,7 @@ function movementIO:activateDoctrineTooltip(hud,source,original,cls)
     tip:AddToViewport(100);tip:SetVisibility(4)
     tip.bTrackAsWidgetUnderCursor=true
     if valid(tip.Root_SizeBox) then tip.Root_SizeBox:SetVisibility(4) end
-    local panels,icons={},{}
+    local panels,icons,classes={},{},{}
     for _,name in ipairs({'DoctrinePanelA','DoctrinePanelB','DoctrinePanelC'}) do
         local panel=tip[name]
         if valid(panel) then
@@ -662,13 +705,18 @@ function movementIO:activateDoctrineTooltip(hud,source,original,cls)
             local panel=slot:GetDoctrinePanel()
             if valid(panel) and panels[panel:GetFullName()] then
                 slot:SetVisibility(0);slot:SetIsEnabled(true)
-                slot.bTrackAsWidgetUnderCursor=true
+                local name=slot:GetFullName()
+                classes[name]=slot.CustomTooltipClass
+                -- This read-only clone owns its detail popup. The native HUD's
+                -- automatic tooltip must not compete with it for hover/focus.
+                slot.CustomTooltipClass=StaticFindObject('/Script/Tempest.ReplayDisabledTooltip')
+                slot.bTrackAsWidgetUnderCursor=false
                 icons[#icons+1]=slot
             end
         end
     end
     original:SetVisibility(2)
-    self.viewerDoctrinePopup={source=source,tip=tip,icons=icons,misses=0}
+    self.viewerDoctrinePopup={source=source,tip=tip,icons=icons,classes=classes,misses=0}
 end
 function movementIO:installDoctrineHover()
     if not self.doctrineHook then
@@ -681,12 +729,15 @@ function movementIO:installDoctrineHover()
                 local hovered
                 for _,icon in ipairs(h.icons) do if valid(icon) and icon:IsHovered() then hovered=icon;break end end
                 if h.source:IsHovered() or h.tip:IsHovered() or hovered then h.misses=0 else h.misses=h.misses+1 end
-                if hovered~=h.icon then
+                local iconKey=hovered and hovered:GetFullName() or nil
+                h.iconMisses=hovered and 0 or (h.iconMisses or 0)+1
+                if iconKey~=h.iconKey and (hovered or h.iconMisses>=3) then
                     if valid(h.description) then h.description:RemoveFromParent() end
-                    h.description=nil;h.icon=hovered
-                    if hovered and valid(hovered.CustomTooltipClass) then
+                    h.description=nil;h.icon=hovered;h.iconKey=iconKey
+                    local cls=iconKey and h.classes[iconKey]
+                    if hovered and valid(cls) then
                         local library=StaticFindObject('/Script/UMG.Default__WidgetBlueprintLibrary')
-                        local description=library:Create(h.source:GetOwningPlayer(),hovered.CustomTooltipClass,h.source:GetOwningPlayer())
+                        local description=library:Create(h.source:GetOwningPlayer(),cls,h.source:GetOwningPlayer())
                         description.TargetWidget=hovered
                         description.DesiredDisplayParams=hovered.CustomTooltipDefaultDisplayParams
                         description:OnTooltipShown()
@@ -700,6 +751,7 @@ function movementIO:installDoctrineHover()
                         if valid(description.TextBlock_CostValue_Time) then description.TextBlock_CostValue_Time:SetText(FText(tostring(hovered:GetResearchTime()))) end
                         if valid(description.Panel_ExtendedDescriptions) then description.Panel_ExtendedDescriptions:SetVisibility(2) end
                         if valid(description.ExtendedDescriptionsSeparator) then description.ExtendedDescriptionsSeparator:SetVisibility(2) end
+                        description.bTrackAsWidgetUnderCursor=false
                         description:AddToViewport(101);description:SetVisibility(3)
                         h.description=description
                     end

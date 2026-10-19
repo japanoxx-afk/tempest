@@ -845,7 +845,7 @@ class BridgeTests(unittest.TestCase):
         source={IsValid=v,GetFullName=function() return 'Source' end,IsHovered=function() return hoveringSource end,
           IsCustomTooltipShown=function() return false end,GetOwningPlayer=function() return pc end}
         panel={IsValid=v,GetFullName=function() return 'Panel' end,SetVisibility=function() end,bResearchable=true}
-        icon={IsValid=v,GetDoctrinePanel=function() return panel end,CustomTooltipClass=cls,
+        icon={IsValid=v,GetFullName=function() return 'Icon' end,GetDoctrinePanel=function() return panel end,CustomTooltipClass=cls,
           IsHovered=function() return hoveringIcon end,GetTitle=function() return 'Hovered title' end,GetDescription=function() return 'Hovered description' end,
           SetVisibility=function(self,x) self.visibility=x end,SetIsEnabled=function(self,x) self.enabled=x end}
         tip={IsValid=v,GetFullName=function() return 'Clone' end,OnTooltipShown=function() end,AddToViewport=function() end,
@@ -863,9 +863,12 @@ class BridgeTests(unittest.TestCase):
         local oldFind=FindAllOf;FindAllOf=function(c) if c=='TedDoctrineSlot' then return {icon} end;return oldFind(c) end
         bridge:activateDoctrineTooltip(nil,source,original,{IsValid=v})
         assert(original.visibility==2 and not panel.bResearchable and icon.enabled and icon.visibility==0)
+        assert(not icon.CustomTooltipClass:IsValid() and not icon.bTrackAsWidgetUnderCursor)
         hoveringSource=false;hoveringPopup=true;hoveringIcon=true
         loops[50]();assert(descriptions==1 and removed==0 and title=='Hovered title' and description=='Hovered description')
         for i=1,10 do loops[50]() end;assert(descriptions==1 and removed==0)
+        hoveringIcon=false;loops[50]();loops[50]();assert(descriptions==1 and removed==0)
+        hoveringIcon=true;loops[50]();assert(descriptions==1 and removed==0)
         hoveringPopup=false;hoveringIcon=false
         for i=1,5 do loops[50]() end;assert(removed==1)
         loops[50]();assert(removed==2)
@@ -880,9 +883,36 @@ class BridgeTests(unittest.TestCase):
         local wrap=function(v) return {get=function() return v end} end
         local hook=hooks['/Script/Tempest.TedPauseMenuScreen:OnPauseMenuButtonSlotAction']
         hook(wrap(menu),nil,wrap(slot),wrap(1));assert(commands[#commands]~='open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
-        hook(wrap(menu),nil,wrap(slot),wrap(0));assert(commands[#commands]=='open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
-        assert(loops[16]())
+        hook(wrap(menu),nil,wrap(slot),wrap(0));assert(commands[#commands]~='open /Game/Tempest/Maps/MainMenu/MAP_MainMenu_P')
         """)
+
+    def test_replay_quit_requires_exact_popup_confirm_and_defers_dispatch(self):
+        self.setup_viewer();self.start('play',replay='TestReplay')
+        self.lua.execute('replayPlaying=true');self.tick();self.tick()
+        self.lua.execute("""
+        local v=function() return true end
+        local wrap=function(x) return {get=function() return x end} end
+        local quit={IsValid=v,GetFullName=function() return 'Menu.Quit' end}
+        local panel={IsValid=v,GetFullName=function() return 'ExitPopup.Buttons' end,GetContentSlotsCount=function() return 2 end}
+        local popup={IsValid=v,IsVisible=function() return true end,ButtonsPanel=panel}
+        local menu={IsValid=v,Slot_Quit=quit,Slot_MainMenu=invalid,GetPauseMenuPopup=function() return popup end,
+          GetOwningPlayer=function() return pc end}
+        local oldFind=FindAllOf;FindAllOf=function(c) if c=='TedPauseMenuScreen' then return {menu} end;return oldFind(c) end
+        local index=0
+        local button={IsValid=v,GetFullName=function() return 'ConfirmButton' end,GetParentContentPanel=function() return panel end,GetSlotIndex=function() return index end}
+        local menuHook=hooks['/Script/Tempest.TedPauseMenuScreen:OnPauseMenuButtonSlotAction']
+        local buttonHook=hooks['/Script/Tempest.TedContentPanelSlotBase:TriggerAction']
+        menuHook(wrap(menu),nil,wrap(quit),wrap(0));assert(commands[#commands]~='exit')
+        buttonHook(wrap(button),wrap(1));assert(not loops[1]) -- hover is not confirm
+        buttonHook(wrap(button),wrap(0));assert(not loops[1]) -- cancel
+        index=1;buttonHook(wrap(button),wrap(0));assert(not loops[1]) -- stale confirm after cancel
+        buttonHook(wrap(quit),wrap(0)) -- direct native menu-handler fallback
+        local other={IsValid=v,GetFullName=function() return 'OtherButton' end,GetParentContentPanel=function() return {IsValid=v,GetFullName=function() return 'OtherPopup' end} end}
+        buttonHook(wrap(other),wrap(0));assert(not loops[1])
+        buttonHook(wrap(button),wrap(0));assert(loops[1] and commands[#commands]~='exit')
+        assert(loops[1]());assert(commands[#commands]=='exit')
+        """)
+        self.assertEqual((self.data/'shutdown.txt').read_text(),'session123')
 
     def test_online_companion_does_not_start_without_native_recording(self):
         self.setup_online_companion()
