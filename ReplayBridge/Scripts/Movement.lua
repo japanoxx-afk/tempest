@@ -25,6 +25,9 @@ function M.velocity(a,b,dt)
 end
 local function finite(n) return type(n)=='number' and n==n and math.abs(n)<1e9 end
 local function token(s) return type(s)=='string' and #s<=160 and s:match('^[%w_%-]+$') end
+function M.assetPath(s)
+    return type(s)=='string' and #s<=240 and s:match('^/Game/Tempest/[%w_/]+%.[%w_]+$')~=nil
+end
 local function fields(line)
     line=line:gsub('\r$','')
     if #line>1024 then error('Movement line too long') end
@@ -37,13 +40,22 @@ end
 function M.writer(path,name)
     assert(token(name),'Invalid replay name')
     local f=assert(io.open(path,'wb'))
-    assert(f:write('TEMPEST_MOVEMENT\t3\t'..name..'\n'));assert(f:flush())
+    assert(f:write('TEMPEST_MOVEMENT\t4\t'..name..'\n'));assert(f:flush())
     local w={file=f,ids={},count=0,frames=0,last=-1}
-    function w:frame(time,units)
+    function w:frame(time,units,doctrines)
         assert(finite(time) and time>=0 and time>=self.last,'Movement clock went backwards')
         if time==self.last then return end
         assert(#units<=20000,'Too many movement units')
         local rows={string.format('F\t%.6f\n',time)};local seen={}
+        for owner,assets in pairs(doctrines or {}) do
+            assert(finite(owner) and owner%1==0 and owner>=0 and owner<256 and #assets<=64,'Invalid doctrine player')
+            rows[#rows+1]='S\t'..owner..'\n'
+            local seenAssets={}
+            for _,path in ipairs(assets) do
+                assert(M.assetPath(path) and not seenAssets[path],'Invalid doctrine asset')
+                seenAssets[path]=true;rows[#rows+1]='R\t'..owner..'\t'..path..'\n'
+            end
+        end
         for _,u in ipairs(units) do
             local key=M.key(u.class,u.owner,u.entity)
             assert(key and not seen[key],'Duplicate/invalid movement identity');seen[key]=true
@@ -80,7 +92,7 @@ function M.reader(path,name)
     local f=io.open(path,'rb');if not f then return nil end
     local header=(f:read('*l') or ''):gsub('\r$','')
     local version
-    for i=1,3 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
+    for i=1,4 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
     if not version then f:close();error('Movement companion header/name mismatch') end
     local r={file=f,definitions={},identities={},tracks={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
@@ -94,7 +106,16 @@ function M.reader(path,name)
             if a[1]=='F' then
                 if frame then self.pending=line;return frame end
                 local t=tonumber(a[2]);assert(#a==2 and finite(t) and t>=0 and t>self.last,'Invalid movement frame clock')
-                self.last=t;self.frames=self.frames+1;frame={time=t,units={},count=0}
+                self.last=t;self.frames=self.frames+1;frame={time=t,units={},count=0,doctrines={}}
+            elseif a[1]=='S' then
+                local owner=tonumber(a[2])
+                assert(version==4 and frame and #a==2 and finite(owner) and owner%1==0 and owner>=0 and owner<256 and not frame.doctrines[owner],'Invalid doctrine player record')
+                frame.doctrines[owner]={}
+            elseif a[1]=='R' then
+                local owner=tonumber(a[2]);local assets=frame and frame.doctrines[owner]
+                assert(version==4 and #a==3 and assets and #assets<64 and M.assetPath(a[3]),'Invalid doctrine asset record')
+                for _,path in ipairs(assets) do assert(path~=a[3],'Duplicate doctrine asset') end
+                assets[#assets+1]=a[3]
             elseif a[1]=='U' then
                 local id,owner,entity=tonumber(a[2]),tonumber(a[4]),tonumber(a[5]);local key=M.key(a[3],owner,entity)
                 assert(frame and #a==5 and id and id%1==0 and id>0 and id<=1000000 and key and not self.definitions[id] and not self.identities[key],'Invalid movement unit definition')
@@ -113,11 +134,11 @@ function M.reader(path,name)
                 unit.building=state
             elseif a[1]=='D' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
-                assert(version==3 and #a==2 and unit and not unit.dead,'Invalid death record');unit.dead=true
+                assert(version>=3 and #a==2 and unit and not unit.dead,'Invalid death record');unit.dead=true
             elseif a[1]=='C' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
                 local footprint,progress=tonumber(a[3]),tonumber(a[4])
-                assert(version==3 and #a==4 and unit and not unit.site and finite(footprint) and footprint%1==0 and footprint>=0 and footprint<256 and finite(progress) and progress>=0 and progress<=1,'Invalid construction site record')
+                assert(version>=3 and #a==4 and unit and not unit.site and finite(footprint) and footprint%1==0 and footprint>=0 and footprint<256 and finite(progress) and progress>=0 and progress<=1,'Invalid construction site record')
                 unit.site={footprint=footprint,progress=progress}
             elseif a[1]=='E' and #a==1 then self:close();return frame
             else error('Invalid movement record') end
@@ -133,6 +154,7 @@ function M.reader(path,name)
             self.previous=self.following;self.following=self:nextFrame()
         end
         local a,b=self.previous,self.following
+        self.doctrines=a and a.doctrines or {}
         if not a or (not b and time>a.time+0.5) then return {} end
         local result={};local alpha=b and math.min(1,(time-a.time)/(b.time-a.time)) or 0
         for key,u in pairs(a.units) do
@@ -197,23 +219,56 @@ function M.match(tracks,samples,actors,bound)
         local a=byName[name];local t=tracks[key]
         if a and t and a.class==t.class and a.owner==t.owner then
             claimed[name]=true;if samples[key] then result[key]=a end
-        else bound[key]=nil end
+        end -- Retired tracks must never attach to a newly produced actor.
     end
-    local proposals,competition={},{}
+    local proposals,competition,cohorts={},{},{}
     for key in pairs(samples) do
-        if not bound[key] then
-            local t=tracks[key];local best,score,runner=nil,math.huge,math.huge
+        if not bound[key] and not samples[key].dead and samples[key].building~=3 then
+            local t=tracks[key];local best,score,runner=nil,math.huge,math.huge;local ties={}
             for _,a in ipairs(actors) do
-                if t and t.position and not claimed[a.name] and a.class==t.class and a.owner==t.owner then
+                if t and t.position and a.eligible~=false and not claimed[a.name] and a.class==t.class and a.owner==t.owner then
                     local p,q=a.position,t.position
-                    local d=(p.X-q.X)^2+(p.Y-q.Y)^2+(p.Z-q.Z)^2
-                    if d<score then runner=score;score=d;best=a elseif d<runner then runner=d end
+                    local distance=(p.X-q.X)^2+(p.Y-q.Y)^2+(p.Z-q.Z)^2
+                    -- Repeated production uses the same exit pose. Native actor
+                    -- arrival time disambiguates those otherwise identical spawns.
+                    local dt=a.born and t.time and math.abs(a.born-t.time)
+                    if distance<=200^2 or (dt and dt<=30 and distance<=1000^2) then
+                        local d=distance+(dt and math.min(90000,dt*dt*100) or 0)
+                        if d<score-1 then runner=score;score=d;best=a;ties={a}
+                        elseif math.abs(d-score)<=1 then runner=score;ties[#ties+1]=a
+                        elseif d<runner then runner=d end
+                    end
                 end
             end
-            if best and score<=200^2 and runner-score>1 then
+            if best and runner-score>1 then
                 proposals[key]={actor=best,score=score}
                 local c=competition[best.name] or {};c[#c+1]={key=key,score=score};competition[best.name]=c
+            elseif best and #ties>1 then
+                table.sort(ties,function(a,b)return a.name<b.name end)
+                local names={};for _,a in ipairs(ties) do names[#names+1]=a.name end
+                local signature=table.concat(names,'|')
+                local group=cohorts[signature] or {actors=ties,keys={}};cohorts[signature]=group
+                group.keys[#group.keys+1]=key
             end
+        end
+    end
+    -- A complete co-located production cohort can be paired in stable creation
+    -- order. Partial cohorts stay unresolved; never assign one actor twice.
+    for _,group in pairs(cohorts) do
+        if #group.keys==#group.actors then
+            table.sort(group.keys,function(a,b)
+                if tracks[a].time~=tracks[b].time then return (tracks[a].time or 0)<(tracks[b].time or 0) end
+                return a<b
+            end)
+            table.sort(group.actors,function(a,b)
+                if a.born~=b.born then return (a.born or 0)<(b.born or 0) end
+                return a.name>b.name
+            end)
+            local available=true
+            for _,a in ipairs(group.actors) do if claimed[a.name] or competition[a.name] then available=false end end
+            if available then for i,key in ipairs(group.keys) do
+                local a=group.actors[i];bound[key]=a.name;result[key]=a;claimed[a.name]=true
+            end end
         end
     end
     for key,p in pairs(proposals) do

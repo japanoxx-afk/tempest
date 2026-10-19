@@ -112,6 +112,57 @@ class MovementTests(unittest.TestCase):
         self.assertEqual(self.lua.eval('sample.position.X'),50)
         self.assertEqual(abs(self.lua.eval('sample.rotation.Yaw')),180)
 
+    def test_retired_and_dead_tracks_never_claim_new_production(self):
+        self.lua.execute("""
+        t={old={class='Tank_C',owner=1,position={X=0,Y=0,Z=0}},new={class='Tank_C',owner=1,position={X=0,Y=0,Z=0}}}
+        a={{name='newPawn',class='Tank_C',owner=1,position={X=0,Y=0,Z=0}}}
+        bound={old='removedPawn'};s={old={dead=true},new={}}
+        result=M.match(t,s,a,bound);assert(bound.old=='removedPawn' and result.new.name=='newPawn' and not result.old)
+        bound={};result=M.match(t,{old={dead=true}},a,bound);assert(next(result)==nil)
+        """)
+
+    def test_repeated_exit_pose_uses_actor_arrival_time(self):
+        self.lua.execute("""
+        t={first={class='Tank_C',owner=1,time=10,position={X=0,Y=0,Z=0}},second={class='Tank_C',owner=1,time=20,position={X=0,Y=0,Z=0}}}
+        a={{name='a',class='Tank_C',owner=1,born=10,position={X=0,Y=0,Z=0}},
+           {name='b',class='Tank_C',owner=1,born=20,position={X=0,Y=0,Z=0}}}
+        local r=M.match(t,{first={},second={}},a,{})
+        assert(r.first.name=='a' and r.second.name=='b')
+        """)
+
+    def test_complete_production_cohort_is_one_to_one_but_partial_stays_unbound(self):
+        self.lua.execute("""
+        local p={X=0,Y=0,Z=0}
+        local t={a={class='Tank_C',owner=1,time=10,position=p},b={class='Tank_C',owner=1,time=10,position=p}}
+        local actors={{name='actor2',class='Tank_C',owner=1,born=10,position=p},{name='actor1',class='Tank_C',owner=1,born=10,position=p}}
+        local bound={};local r=M.match(t,{a={},b={}},actors,bound)
+        assert(r.a and r.b and r.a.name~=r.b.name)
+        assert(next(M.match(t,{a={}},actors,{}))==nil)
+        """)
+
+    def test_factory_center_can_bind_recent_exit_but_not_unrelated_far_actor(self):
+        self.lua.execute("""
+        local t={a={class='Tank_C',owner=1,time=30,position={X=800,Y=0,Z=0}}}
+        local a={{name='factorySpawn',class='Tank_C',owner=1,born=20,position={X=0,Y=0,Z=0}}}
+        assert(M.match(t,{a={}},a,{}).a)
+        a[1].born=100;assert(not M.match(t,{a={}},a,{}).a)
+        """)
+
+    def test_doctrine_snapshot_is_discrete_and_can_remove_research(self):
+        self.lua.execute("""
+        local path='/Game/Tempest/DataAssets/Doctrine/GDF/DD_Test.DD_Test'
+        w=M.writer(_G.path,'Test');w:frame(0,{}, {[0]={}});w:frame(1,{}, {[0]={path}});w:frame(2,{}, {[0]={}});w:close()
+        r=M.reader(_G.path,'Test');r:at(0.99);assert(#r.doctrines[0]==0)
+        r:at(1);assert(r.doctrines[0][1]==path);r:at(2);assert(#r.doctrines[0]==0)
+        assert(not M.assetPath('/Game/Tempest/../Commands.Cmd'))
+        """)
+
+    def test_doctrine_reader_rejects_paths_and_orphan_records(self):
+        for row in ['R\\t0\\t/Game/Tempest/A.A', 'S\\t-1', 'S\\t0\\nR\\t0\\t/Script/Engine.Foo']:
+            self.path.write_text('TEMPEST_MOVEMENT\t4\tTest\nF\t0\n'+row.replace('\\t','\t').replace('\\n','\n')+'\nE\n')
+            with self.assertRaises(LuaError): self.lua.execute("r=M.reader(path,'Test');r:at(0)")
+            self.lua.execute('r:close()')
+
     def test_velocity_uses_recorded_clock_and_stops_at_last_sample(self):
         self.create()
         self.assertEqual(self.lua.eval("r:at(0.25)['Tank_C:1:2076'].velocity.X"),100)

@@ -191,6 +191,7 @@ function movementIO:identity(actor)
 end
 function movementIO:close()
     self.animationFrames={}
+    self.projectiles=nil;self.projectileTime=nil;self.doctrineApplied=nil
     self.viewerDoctrinePopup=nil
     self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
@@ -215,6 +216,8 @@ end
 function movementIO:updateLocomotion(actor,velocity)
     local mesh=actor.MeshComp
     if not valid(mesh) then return end
+    actor:SetActorTickEnabled(true)
+    mesh:SetComponentTickEnabled(true)
     local anim=mesh:GetAnimInstance()
     if not valid(anim) or not anim:IsA('/Script/Tempest.TedAnimInstance_Infantry') then return end
     local definition=actor:GetDefinitionAsset()
@@ -290,7 +293,27 @@ function movementIO:record(subsystem,name,actors)
             end
         end
     end
-    self.writer:frame(subsystem:GetReplayCurrentTime(),units)
+    local doctrines={}
+    for _,data in ipairs(FindAllOf('TedPlayerData') or {}) do
+        if valid(data) then
+            local owner=data:GetOwningPlayerState()
+            if valid(owner) then
+                local id=owner:GetTedPlayerID()
+                if type(id)=='number' and id>=0 and id<256 then
+                    local assets={}
+                    data.ResearchedDoctrines:ForEach(function(_,entry)
+                        local asset=entry:get()
+                        if valid(asset) then
+                            local path=asset:GetFullName():match('^[^ ]+ (.+)$')
+                            if self.codec.assetPath(path) then assets[#assets+1]=path end
+                        end
+                    end)
+                    doctrines[id]=assets
+                end
+            end
+        end
+    end
+    self.writer:frame(subsystem:GetReplayCurrentTime(),units,doctrines)
     self.frames=self.writer.frames;self.units=#units
     if self.frames%10==0 then write(home..'movement-state.txt',session..'\n'..name..'\nrecording\nframes='..self.frames..'\nunits='..self.units) end
 end
@@ -391,9 +414,121 @@ function movementIO:siteVisuals(actor,key,sample,time)
     end
     return true
 end
+function movementIO:restoreDoctrines(snapshot)
+    if mode~='play' or not snapshot or not next(snapshot) then return end
+    self.doctrineApplied=self.doctrineApplied or {}
+    for _,data in ipairs(FindAllOf('TedPlayerData') or {}) do
+        if valid(data) then
+            local owner=data:GetOwningPlayerState()
+            local paths=valid(owner) and snapshot[owner:GetTedPlayerID()]
+            if paths then
+                local key=data:GetFullName();local signature=table.concat(paths,'|')
+                if self.doctrineApplied[key]~=signature then
+                    local assets={};local complete=true
+                    for _,path in ipairs(paths) do
+                        local asset=LoadAsset(path)
+                        if valid(asset) and asset:IsA('/Script/Tempest.TedDoctrineDefinition') then assets[#assets+1]=asset else complete=false end
+                    end
+                    if complete then
+                        -- UI-readable replay state only: do not grant research,
+                        -- apply gameplay effects or dispatch player commands.
+                        data.ResearchedDoctrines=assets
+                        for _,widget in ipairs(FindAllOf('TedPlayerDataWidget') or {}) do
+                            if valid(widget) then
+                                local target=widget:GetTargetPlayerData()
+                                if valid(target) and target:GetFullName()==key then widget:OnResearchedDoctrinesChange_Handler_Native(data) end
+                            end
+                        end
+                        self.doctrineApplied[key]=signature
+                    end
+                end
+            end
+        end
+    end
+end
+function movementIO:updateProjectiles(time)
+    if mode~='play' then return end
+    self.projectiles=self.projectiles or {}
+    self.projectileHooks=self.projectileHooks or {}
+    local function install(path)
+        if self.projectileHooks[path] then return end
+        self.projectileHooks[path]=true
+        RegisterHook(path,function(context)
+            if not self.projectiles then return end
+            local actor=context:get();if not valid(actor) then return end
+            local key=actor:GetFullName();local old=self.projectiles[key]
+            if old and old.retired and valid(actor.ProjectileMovement) then
+                actor:SetActorTickEnabled(true);actor.ProjectileMovement:SetComponentTickEnabled(true)
+            end
+            self.projectiles[key]=nil -- pooled actor, new shot
+        end)
+    end
+    install('/Script/Tempest.TedProjectile:ReceiveOnProjectileFired')
+    if self.projectileTime and time-self.projectileTime<0.05 then return end
+    self.projectileTime=time
+    local active={}
+    for _,actor in ipairs(FindAllOf('TedProjectile') or {}) do
+        if valid(actor) and valid(actor.ProjectileMovement) then
+            local cls=actor:GetClass();local classPath=cls:GetFullName()
+            if not self.projectileHooks[classPath] then
+                self.projectileHooks[classPath]=true
+                cls:ForEachFunction(function(fn)
+                    if fn:GetFName():ToString()=='ReceiveOnProjectileFired' then
+                        install(classPath:gsub('^BlueprintGeneratedClass ',''):gsub('^Class ','')..':ReceiveOnProjectileFired')
+                    end
+                end)
+            end
+        end
+        -- Tracer Blueprints can keep bHidden=true while their FX components are
+        -- visible. Movement activity, rather than actor visibility, owns a shot.
+        if valid(actor) and valid(actor.ProjectileMovement) and actor.ProjectileMovement:IsActive() then
+            local key=actor:GetFullName();local p=actor:K2_GetActorLocation()
+            local start=actor.StartLocation;local dest=actor.TargetLocation
+            local signature=table.concat({start.X,start.Y,start.Z,dest.X,dest.Y,dest.Z},':')
+            local shot=self.projectiles[key]
+            if not shot or shot.signature~=signature then shot={signature=signature,time=time};self.projectiles[key]=shot end
+            active[key]=shot
+            local target=valid(actor.Target) and actor.Target:K2_GetActorLocation() or dest
+            local dx,dy,dz=target.X-start.X,target.Y-start.Y,target.Z-start.Z
+            local range=math.sqrt(dx*dx+dy*dy+dz*dz)
+            local x,y,z=p.X-start.X,p.Y-start.Y,p.Z-start.Z
+            -- Only retire overshot presentation actors. Never call damage/hit
+            -- gameplay functions or destroy pooled actors needed by later shots.
+            local passed=range>1 and (x*dx+y*dy+z*dz)/(range*range)>1.05
+            if passed or time-shot.time>30 then
+                actor:SetActorHiddenInGame(true)
+                actor.ProjectileMovement:Deactivate();actor.ProjectileMovement:SetComponentTickEnabled(false)
+                local fxClass=StaticFindObject('/Script/Engine.FXSystemComponent')
+                if valid(fxClass) then
+                    local components=actor:K2_GetComponentsByClass(fxClass)
+                    local function stopFX(entry)
+                        -- UE4SS can return direct objects or wrapped array values.
+                        local ok,fx=pcall(function() return entry:get() end)
+                        if not ok then fx=entry end
+                        local checked,isValid=pcall(function() return valid(fx) end)
+                        if checked and isValid then fx:Deactivate() end
+                    end
+                    if type(components)=='table' then
+                        for _,entry in pairs(components) do stopFX(entry) end
+                    else
+                        components:ForEach(function(_,entry) stopFX(entry) end)
+                    end
+                end
+                shot.retired=true
+                self.retiredProjectileCount=(self.retiredProjectileCount or 0)+1
+            end
+        end
+    end
+    -- Keep retired entries for pooled-fire reactivation, discard unrelated old shots.
+    for key,shot in pairs(self.projectiles) do if not active[key] and not shot.retired then self.projectiles[key]=nil end end
+end
 function movementIO:play(subsystem)
     self.animationFrames={}
     if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
+    if not self.projectileFailed then
+        local ok,err=pcall(function() self:updateProjectiles(subsystem:GetReplayCurrentTime()) end)
+        if not ok then self.projectileFailed=true;status('projectile_visual_error',tostring(err)) end
+    end
     if not self.codec or self.failed then return end
     if not self.opened then
         self.opened=true
@@ -406,29 +541,37 @@ function movementIO:play(subsystem)
     if not self.reader then return end
     local time=subsystem:GetReplayCurrentTime()
     local samples=self.reader:at(time);local actors={}
+    if not self.doctrineFailed then
+        local ok,err=pcall(function() self:restoreDoctrines(self.reader.doctrines) end)
+        if not ok then self.doctrineFailed=true;status('doctrine_visual_error',tostring(err)) end
+    end
     if not self.reader.following and self.reader.previous and time>self.reader.previous.time+0.5 then
         self.visible={};self.absent={};self.applied=0;return
     end
-    self.origins=self.origins or {};self.bindings=self.bindings or {}
+    self.origins=self.origins or {};self.bindings=self.bindings or {};self.births=self.births or {}
     local candidates={}
     for _,actor in ipairs(FindAllOf('TedPawn') or {}) do
-        if valid(actor) and not actor:IsInContainer() then
+        if valid(actor) then
             self:watchDeath(actor)
             local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
             if ok and dead then self:deathVisuals(actor,true) end
             local name=actor:GetFullName()
             if self:isPresentationPawn(actor) then
+                self.births[name]=self.births[name] or time
                 -- Unbound actors can initially have an unreplicated spawn pose.
                 -- Refresh that pose until matched; never remap a bound actor.
-                if not self.managed or not self.managed[name] then self.origins[name]=actor:K2_GetActorLocation() end
+                if not self.managed or not self.managed[name] then
+                    local p=actor:K2_GetActorLocation()
+                    self.origins[name]={X=p.X,Y=p.Y,Z=p.Z}
+                end
                 candidates[#candidates+1]={name=name,actor=actor,position=self.origins[name],
-                    class=actor:GetClass():GetFName():ToString(),owner=actor:GetOwningPlayerID()}
+                    class=actor:GetClass():GetFName():ToString(),owner=actor:GetOwningPlayerID(),born=self.births[name],eligible=not self:isDead(actor)}
             end
         end
     end
     local matched=self.codec.match(self.reader.tracks,samples,candidates,self.bindings)
     for key,candidate in pairs(matched) do actors[key]=candidate.actor end
-    local applied,visible,absent=0,{},{}
+    local applied,visible,absent,containerCorrections=0,{},{},0
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
@@ -436,6 +579,7 @@ function movementIO:play(subsystem)
         if actor then self:buildingVisuals(actor,sample.building) end
         if actor and not self:isDead(actor) and self:siteVisuals(actor,key,sample,time) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
+            if actor:IsInContainer() then containerCorrections=containerCorrections+1 end
             if not self.visible or not self.visible[name] then
                 actor:K2_SetDefaultVisibility(true,true)
                 actor:K2_OnVisibilityChanged(true)
@@ -468,6 +612,10 @@ function movementIO:play(subsystem)
     self.visible=visible
     self.absent=absent
     self.applied=applied
+    if not self.proofTime or time-self.proofTime>=1 then
+        self.proofTime=time
+        write(home..'playback-state.txt',session..'\ntime='..time..'\napplied='..applied..'\nstale_container_overrides='..containerCorrections..'\nretired_projectiles='..(self.retiredProjectileCount or 0))
+    end
     if not self.markerFailed and (not self.markerTime or time-self.markerTime>=0.1) then
         self.markerTime=time
         local ok,err=pcall(function() self:updateMarkers(actors,samples) end)
@@ -1163,9 +1311,7 @@ gameLoop(1000, function()
                                 if not viewerActors[name] then
                                     -- Replay-created structures otherwise retain their concealed,
                                     -- underground construction pose. Use the game's visibility init.
-                                    if neutral then
-                                        actor:SetDestroyedMeshOnVisibilityChange()
-                                    elseif actor:IsA('/Script/Tempest.TedStructureBase') then
+                                    if not neutral and actor:IsA('/Script/Tempest.TedStructureBase') then
                                         actor:SetInitiallyVisible()
                                         if not movementIO.buildingStates or not movementIO.buildingStates[name] then movementIO:buildingVisuals(actor) end
                                     end

@@ -1,8 +1,8 @@
-# Movement companion v1/v2/v3
+# Movement companion v1/v2/v3/v4
 
 The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Unreal replay and cannot be played independently. Store it beside the same-named `.replay` file. The generated replay basename binds the pair. Do not rename one file independently.
 
-- Header: `TEMPEST_MOVEMENT<TAB>3<TAB>basename` for new recordings; readers also accept v1/v2.
+- Header: `TEMPEST_MOVEMENT<TAB>4<TAB>basename` for new recordings; readers also accept v1/v2/v3.
 - `F<TAB>nativeReplaySeconds` begins a full snapshot. Times increase monotonically.
 - `U<TAB>localID<TAB>unitClass<TAB>ownerID<TAB>entityKey` defines an identity once.
 - `P<TAB>localID<TAB>X<TAB>Y<TAB>Z<TAB>Pitch<TAB>Yaw<TAB>Roll` records a received transform.
@@ -25,3 +25,7 @@ v0.3.9 additionally derives presentation velocity from adjacent position samples
 v3 additionally supports one optional `D<TAB>localID` per pose for explicit native death of any pawn type, and one `C<TAB>localID<TAB>footprintIndex<TAB>progress` for construction sites. Footprint index is a zero-based integer 0..255; progress is finite 0..1. These values are discrete. A death hook retains the last plain pose if the native actor vanishes before the next snapshot. The final match-end snapshot flushes pending deaths before stopping the native driver. No server damage/death/RPC is invoked.
 
 For old companions, a construction-site track is split when its location changes, then matched only to a unique future completed structure of the same owner within 200 Unreal units. Its class default StructureGridSize selects the site's matching footprint (UE array iteration is one-based; the native active index is zero-based). Ambiguous matches are left alone. New files use the observed footprint and progress directly. A metadata scan builds this catalog; transforms remain streamed through two frames.
+
+v4 adds `S<TAB>ownerID` to start that player's full researched-doctrine snapshot, followed by zero or more `R<TAB>ownerID<TAB>assetObjectPath` records. The snapshot changes at its frame time and can explicitly become empty. Owners are integers 0..255, at most 64 unique assets per owner; object paths are restricted to /Game/Tempest, ASCII path components, one object suffix and 240 characters. Playback loads only TedDoctrineDefinition assets and replaces the local replay PlayerData list, then notifies matching UI widgets. No research purchase, gameplay effect or RPC is issued. Legacy files have no such snapshot and leave native doctrine state unchanged.
+
+v0.3.16 also retains retired actor bindings, rejects dead samples for new bindings, compares actor arrival times for repeated production exit poses, and copies initial coordinates into plain Lua tables. A stale native IsInContainer flag no longer excludes an actor from binding or applying a received outside-container sample. Exact unresolved spawn ties still remain native.

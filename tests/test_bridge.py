@@ -385,12 +385,13 @@ class BridgeTests(unittest.TestCase):
         RegisterHook=function(path,callback) animHook=callback end
         anim={IsValid=function() return true end,IsA=function() return true end,
           GetFullName=function() return 'InfantryAnim' end,IsMovingSpeedThreshold=5}
-        unit.MeshComp={IsValid=function() return true end,GetAnimInstance=function() return anim end}
+        unit.MeshComp={IsValid=function() return true end,GetAnimInstance=function() return anim end,
+          SetComponentTickEnabled=function(self,on)meshTick=on end}
         unit.GetDefinitionAsset=function() return {IsValid=function() return true end,MovementSpeed=550} end
         """)
         self.bridge.animationFrames=self.lua.table()
         self.bridge.updateLocomotion(self.bridge,self.lua.globals().unit,self.lua.eval('{X=550,Y=0,Z=0}'))
-        self.lua.execute('anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==550);assert(anim.MaxSpeed==550);assert(anim.bIsMoving)')
+        self.lua.execute('assert(meshTick);anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==550);assert(anim.MaxSpeed==550);assert(anim.bIsMoving)')
         self.bridge.close(self.bridge)
         self.lua.execute('anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==100)')
 
@@ -557,6 +558,67 @@ class BridgeTests(unittest.TestCase):
         replayTime=1;loops[16]();assert(move.Velocity.X==0)
         """)
 
+    def test_recorded_exit_movement_is_not_blocked_by_stale_native_container(self):
+        self.setup_input();self.setup_online_companion()
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nP\t1\t110\t20\t30\t0\t0\t0\nE\n')
+        self.lua.execute('unit.IsInContainer=function() return true end;replayPlaying=true;loops[16]();assert(locationWrites==1)')
+
+    def test_replay_projectiles_retire_after_destination_and_can_be_reused(self):
+        self.start('play',replay='TestReplay')
+        self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        px=110;active=true;disabled=0;enabled=0;fxStops=0
+        local oldFind=StaticFindObject
+        StaticFindObject=function(path)if path=='/Script/Engine.FXSystemComponent' then return {IsValid=function()return true end} end;return oldFind(path) end
+        move={IsValid=function()return true end,IsActive=function()return active end,
+          Deactivate=function()active=false end,SetComponentTickEnabled=function(self,on)if on then enabled=enabled+1 else disabled=disabled+1 end end}
+        shot={IsValid=function()return true end,bHidden=false,ProjectileMovement=move,Target=invalid,
+          GetClass=function()return {GetFullName=function()return 'Class /Script/Tempest.TedProjectile' end,ForEachFunction=function()end} end,
+          StartLocation={X=0,Y=0,Z=0},TargetLocation={X=100,Y=0,Z=0},
+          GetFullName=function()return 'shot' end,K2_GetActorLocation=function()return {X=px,Y=0,Z=0} end,
+          SetActorHiddenInGame=function(self,on)self.bHidden=on end,SetActorTickEnabled=function()end,
+          K2_GetComponentsByClass=function()return {false,{get=function()return {IsValid=function()return true end,Deactivate=function()fxStops=fxStops+1 end} end}} end,
+          ReceiveOnProjectileHit=function()error('must not dispatch damage/hit')end}
+        FindAllOf=function(cls)if cls=='TedProjectile' then return {shot} end;return {} end
+        bridge:updateProjectiles(0);assert(shot.bHidden and not active and disabled==1 and fxStops==1)
+        hooks['/Script/Tempest.TedProjectile:ReceiveOnProjectileFired']({get=function()return shot end})
+        assert(enabled==1);shot.bHidden=false;active=true;px=10
+        bridge:updateProjectiles(1);assert(not shot.bHidden and active)
+        bridge:updateProjectiles(32);assert(shot.bHidden)
+        """)
+
+    def test_doctrine_restore_refreshes_ui_once_without_granting_gameplay_research(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        refreshed=0
+        local asset={IsValid=function()return true end,IsA=function(self,c)return c=='/Script/Tempest.TedDoctrineDefinition' end}
+        LoadAsset=function()return asset end
+        local owner={IsValid=function()return true end,GetTedPlayerID=function()return 0 end}
+        local data={IsValid=function()return true end,GetOwningPlayerState=function()return owner end,GetFullName=function()return 'data' end}
+        local widget={IsValid=function()return true end,GetTargetPlayerData=function()return data end,
+          OnResearchedDoctrinesChange_Handler_Native=function()refreshed=refreshed+1 end}
+        FindAllOf=function(c)if c=='TedPlayerData' then return {data} elseif c=='TedPlayerDataWidget' then return {widget} end;return {} end
+        local snapshot={[0]={'/Game/Tempest/DataAssets/Doctrine/GDF/DD_Test.DD_Test'}}
+        bridge:restoreDoctrines(snapshot);bridge:restoreDoctrines(snapshot)
+        assert(#data.ResearchedDoctrines==1 and refreshed==1)
+        bridge:restoreDoctrines({[0]={}});assert(#data.ResearchedDoctrines==0 and refreshed==2)
+        """)
+
+    def test_recording_captures_received_doctrines_in_the_paired_companion(self):
+        (self.root/'Tempest/Saved/Demos').mkdir(parents=True)
+        self.start();self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local owner={IsValid=function()return true end,GetTedPlayerID=function()return 0 end}
+        local asset={IsValid=function()return true end,GetFullName=function()return 'TedDoctrineDefinition /Game/Tempest/DataAssets/Doctrine/GDF/DD_Test.DD_Test' end}
+        local data={IsValid=function()return true end,GetOwningPlayerState=function()return owner end,
+          ResearchedDoctrines={ForEach=function(self,fn)fn(1,{get=function()return asset end})end}}
+        FindAllOf=function(c)if c=='TedPlayerData' then return {data} end;return {} end
+        bridge:record({GetReplayCurrentTime=function()return 0 end},'TestReplay',{});bridge:close()
+        local reader=bridge.codec.reader(testRoot..'/Tempest/Saved/Demos/TestReplay.movement','TestReplay')
+        reader:at(0);assert(reader.doctrines[0][1]=='/Game/Tempest/DataAssets/Doctrine/GDF/DD_Test.DD_Test');reader:close()
+        """)
+
     def test_neutral_structure_is_not_a_placement_preview(self):
         self.start('play', replay='TestReplay')
         actor=self.lua.eval("{GetFullName=function() return 'BP_Conformation_Garage_C_1' end,IsA=function(self,c) return c=='/Script/Tempest.TedConformationBase' end}")
@@ -592,7 +654,7 @@ class BridgeTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.lua.globals().visibilityCalls,initial+1)
 
-    def test_native_neutral_without_companion_is_initialized(self):
+    def test_native_neutral_visibility_never_forces_destroyed_mesh(self):
         self.setup_viewer()
         self.lua.execute("""
         neutralInitialized=0
@@ -603,7 +665,7 @@ class BridgeTests(unittest.TestCase):
         self.start('play', replay='TestReplay')
         self.lua.execute('replayPlaying=true')
         self.tick();self.tick()
-        self.assertEqual(self.lua.globals().neutralInitialized,1)
+        self.assertEqual(self.lua.globals().neutralInitialized,0)
 
     def test_explicit_death_is_not_overridden_by_companion_visibility(self):
         self.setup_input();self.setup_online_companion()
