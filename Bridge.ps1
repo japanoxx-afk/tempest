@@ -87,7 +87,7 @@ function Start-BridgeSession([string]$GamePath,[ValidateSet('probe','record','pl
  if ($Mode -eq 'play') {
   $watcher=Join-Path $script:BridgeSourceRoot 'ReplayBridge\WatchExit.ps1'
   $gameExe=Join-Path $GamePath 'Tempest\Binaries\Win64\Tempest-Win64-Shipping.exe'
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$watcher+'"'),'-GameExecutable',('"'+$gameExe+'"'),'-Data',('"'+$p.Data+'"'),'-Session',$session)
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$watcher+'"'),'-GameExecutable',('"'+$gameExe+'"'),'-Data',('"'+$p.Data+'"'),'-Session',$session,'-ApplyReplayGuard')
   # The game's BP_HUD_MainMenu.SkipIntro checks the command line for NoIntro.
   # Pass it for this replay process only; do not edit persistent Steam options.
   Start-Process -FilePath $steamExe -ArgumentList @('-applaunch','1486920','-NoIntro') -WindowStyle Hidden

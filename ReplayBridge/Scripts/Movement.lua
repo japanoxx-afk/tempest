@@ -94,7 +94,7 @@ function M.reader(path,name)
     local version
     for i=1,4 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
     if not version then f:close();error('Movement companion header/name mismatch') end
-    local r={file=f,definitions={},identities={},tracks={},last=-1,frames=0}
+    local r={file=f,definitions={},identities={},tracks={},deaths={},deliveredDeaths={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
     function r:nextFrame()
         if not self.file then return nil end
@@ -135,6 +135,7 @@ function M.reader(path,name)
             elseif a[1]=='D' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
                 assert(version>=3 and #a==2 and unit and not unit.dead,'Invalid death record');unit.dead=true
+                if not self.deaths[key] then self.deaths[key]={time=frame.time,unit=unit} end
             elseif a[1]=='C' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
                 local footprint,progress=tonumber(a[3]),tonumber(a[4])
@@ -165,6 +166,16 @@ function M.reader(path,name)
                     building=u.building,dead=u.dead,site=u.site,velocity=M.velocity(p,q,b.time-a.time),
                     rotation={Pitch=angle(x.Pitch,y.Pitch,alpha),Yaw=angle(x.Yaw,y.Yaw,alpha),Roll=angle(x.Roll,y.Roll,alpha)}}
             else result[key]={position=u.position,rotation=u.rotation,building=u.building,dead=u.dead,site=u.site,velocity={X=0,Y=0,Z=0}} end
+        end
+        -- A fast playback frame can cross the one-shot death sample. Deliver
+        -- every reached tombstone once even if its frame was skipped entirely.
+        for key,event in pairs(self.deaths) do
+            if event.time<=time and not self.deliveredDeaths[key] then
+                local u=event.unit
+                result[key]={position=u.position,rotation=u.rotation,building=u.building,
+                    dead=true,site=u.site,velocity={X=0,Y=0,Z=0}}
+                self.deliveredDeaths[key]=true
+            end
         end
         return result
     end

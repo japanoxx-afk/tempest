@@ -56,6 +56,7 @@ if($parseErrors.Count){throw ($parseErrors | Out-String)}
 $click=$ast.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Expression.Extent.Text -eq '$ui.Update' -and $n.Member.Value -eq 'Add_Click'},$true) | Select-Object -First 1
 $tick=$ast.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Expression.Extent.Text -eq '$updateTimer' -and $n.Member.Value -eq 'Add_Tick'},$true) | Select-Object -First 1
 $ui=@{Update=[pscustomobject]@{IsEnabled=$true;Content='Update'};Status=[pscustomobject]@{Text=''}}
+function Get-LocalizedText([string]$Text){return $Text}
 $data=$testRoot;$root=$target;$version='1.0.0'
 $window=[pscustomobject]@{Closed=$false};$window | Add-Member ScriptMethod Close {$this.Closed=$true}
 $updateTimer=[pscustomobject]@{Running=$false};$updateTimer | Add-Member ScriptMethod Start {$this.Running=$true};$updateTimer | Add-Member ScriptMethod Stop {$this.Running=$false}

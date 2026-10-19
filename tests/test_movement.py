@@ -28,6 +28,15 @@ class MovementTests(unittest.TestCase):
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
 
+    def test_one_shot_death_is_delivered_when_fast_playback_skips_its_frame(self):
+        self.lua.execute('''
+        w=M.writer(path,'Test');w:frame(0,{unit(0,0)})
+        u=unit(10,0);u.dead=true;w:frame(1,{u});w:frame(2,{});w:frame(3,{});w:close()
+        r=M.reader(path,'Test');assert(not r:at(0.5)['Tank_C:1:2076'].dead)
+        local sample=r:at(2.1)['Tank_C:1:2076'];assert(sample.dead and sample.position.X==10)
+        assert(r:at(2.2)['Tank_C:1:2076']==nil);r:close()
+        ''')
+
     def test_building_states_change_at_recorded_time_without_interpolation(self):
         self.lua.execute("""
         w=M.writer(path,'Test');u=unit(0,0);u.building=1;w:frame(0,{u})

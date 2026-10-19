@@ -78,6 +78,8 @@ class BridgeTests(unittest.TestCase):
 
     def start(self, mode='record', expiry=1100, replay=''):
         (self.data / 'request.txt').write_text(f'{mode}\nsession123\n{expiry}\n{replay}\n')
+        if mode=='play':
+            (self.data/'safety.txt').write_text('session123\nready\nMock native guard')
         self.bridge=self.lua.execute(SOURCE+'\nreturn movementIO')
 
     def commands(self):
@@ -89,6 +91,40 @@ class BridgeTests(unittest.TestCase):
     def test_normal_launch_is_idle(self):
         self.lua.execute(SOURCE)
         self.assertIsNone(self.lua.globals().loop)
+
+    def test_replay_requires_current_session_native_guard_before_demoplay(self):
+        self.start('play',replay='TestReplay')
+        for content in ['', 'other\nready\nGuard', 'session123\nerror\nUnsupported build']:
+            (self.data/'safety.txt').write_text(content)
+            self.tick()
+            self.assertFalse(any(c.startswith('demoplay') for c in self.commands()))
+        self.assertIn('viewer_safety_error',(self.data/'status.txt').read_text())
+        (self.data/'safety.txt').write_text('session123\nready\nVerified')
+        self.tick()
+        self.assertIn('demoplay TestReplay',self.commands())
+
+    def test_replay_menu_exit_closes_the_protected_process_without_opening_live_menu(self):
+        self.setup_viewer();self.start('play',replay='TestReplay')
+        self.lua.execute('replayPlaying=true');self.tick();self.tick()
+        self.lua.execute("hooks['/Script/Tempest.TedPlayerController:ExitCurrentGame']({get=function()return pc end},{get=function()return false end})")
+        self.assertEqual((self.data/'close-viewer.txt').read_text(),'session123')
+        self.assertEqual(self.commands()[-1],'exit')
+        self.assertFalse(any(c.startswith('open ') for c in self.commands()))
+        self.assertFalse((self.data/'restore-safety.txt').exists())
+
+    def test_tooltip_hover_uses_cursor_bounds_instead_of_latched_native_hover(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        inside=false
+        local v=function()return true end
+        local slate={IsValid=v,GetLocalSize=function()return {X=1,Y=1} end,IsUnderLocation=function()return inside end}
+        local layout={IsValid=v,GetMousePositionOnPlatform=function()return {} end}
+        StaticFindObject=function(path)if path:find('SlateBlueprint')then return slate else return layout end end
+        local w={IsValid=v,IsHovered=function()return true end,GetCachedGeometry=function()return {} end}
+        assert(not bridge:underCursor(w));inside=true;assert(bridge:underCursor(w))
+        slate.GetLocalSize=function()return {X=0,Y=0} end
+        assert(bridge:underCursor(w)) -- empty native const-reference geometry
+        ''')
 
     def test_expired_request_is_idle(self):
         self.start(expiry=900)
@@ -588,6 +624,65 @@ class BridgeTests(unittest.TestCase):
         bridge:updateProjectiles(32);assert(shot.bHidden)
         """)
 
+    def test_corpse_collision_stops_immediately_and_mesh_retires_once(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        collision=true;hidden=false;ticking=true;deaths=0
+        local a={IsValid=function()return true end,GetFullName=function()return 'Sentinel' end,
+          DestroyActorDelay=3,ReceiveOnDeath=function()deaths=deaths+1 end,
+          SetActorEnableCollision=function(self,v)collision=v end,
+          SetActorHiddenInGame=function(self,v)hidden=v end,
+          SetActorTickEnabled=function(self,v)ticking=v end,
+          MeshComp={IsValid=function()return true end,SetComponentTickEnabled=function()end,
+            SetHiddenInGame=function()end}}
+        bridge.playTime=10;bridge:deathVisuals(a,true)
+        assert(not collision and not hidden and deaths==1)
+        bridge:retireCorpses(12.9);assert(not hidden)
+        bridge:retireCorpses(13);assert(hidden and not ticking and bridge.retiredCorpses==1)
+        bridge:deathVisuals(a,true);bridge:retireCorpses(30)
+        assert(deaths==1 and bridge.retiredCorpses==1 and next(bridge.corpseQueue)==nil)
+        ''')
+
+    def test_actor_discovery_cache_expires_and_clears_at_teardown(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        scans=0;FindAllOf=function()scans=scans+1;return {} end
+        for i=1,60 do bridge:cachedActors('TedPawn') end;assert(scans==1)
+        bridge.cacheTick=1;bridge:cachedActors('TedPawn');assert(scans==2)
+        bridge:close();assert(bridge.actorCache==nil)
+        ''')
+
+    def test_replay_pawn_without_combat_attributes_never_enables_primary_tick(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        writes=0;enabled=true
+        local pawn={GetFullName=function()return 'Pawn' end,SetActorTickEnabled=function(self,v)writes=writes+1;enabled=v end}
+        bridge:presentationTick(pawn);assert(writes==1 and not enabled)
+        pawn.DefaultAttributeSet={IsValid=function()return true end}
+        bridge:presentationTick(pawn);assert(writes==1)
+        ''')
+
+    def test_neutral_deployed_asset_is_restored_only_when_mesh_is_missing(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        writes=0
+        local v=function()return true end
+        local asset={IsValid=v,IsA=function(self,c)return c=='/Script/Engine.SkeletalMesh' end}
+        local mesh={IsValid=v,IsA=function(self,c)return c=='/Script/Engine.SkeletalMeshComponent' end,
+          SetSkeletalMesh=function(self,m)self.SkeletalMesh=m;writes=writes+1 end}
+        local pawn={GetFullName=function()return 'NeutralBunker' end,PawnDeath={bDied=false},
+          IsA=function(self,c)return c=='/Script/Tempest.TedConformationBase' end,MeshComp=mesh,Mesh_Deployed=asset}
+        bridge:neutralMesh(pawn);bridge:neutralMesh(pawn);assert(writes==1 and mesh.SkeletalMesh==asset)
+        pawn.PawnDeath.bDied=true;mesh.SkeletalMesh=nil;bridge:neutralMesh(pawn);assert(writes==1)
+        ''')
+
+    def test_dead_samples_are_recorded_once_instead_of_growing_every_frame(self):
+        self.setup_online_companion();self.start()
+        self.lua.execute('began=true');self.tick();self.lua.execute('loops[100]()')
+        self.lua.execute('unit.PawnDeath={bDied=true};replayTime=1;loops[100]();replayTime=2;loops[100]();isRecording=false;loops[100]()')
+        files=list((self.root/'Tempest/Saved/Demos').glob('*.movement'))
+        self.assertEqual(files[0].read_text().count('D\t1\n'),1)
+
     def test_doctrine_restore_refreshes_ui_once_without_granting_gameplay_research(self):
         self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
         self.lua.execute("""
@@ -728,7 +823,7 @@ class BridgeTests(unittest.TestCase):
         unit.EcsActor={IsValid=function() return true end,TempestReplayEntityKey=2076}
         unit.GetClass=function() return {GetFName=function() return FName('Tank_C') end,
           GetFullName=function() return 'Class Tank_C' end,ForEachFunction=function() end} end
-        unit.SetActorTickEnabled=function() end;unit.ReceiveOnDeath=function() end
+        unit.SetActorEnableCollision=function() end;unit.SetActorTickEnabled=function() end;unit.ReceiveOnDeath=function() end
         unit.GetOwningPlayerID=function() return 1 end
         unit.IsAlive=function() return true end;unit.IsInContainer=function() return false end
         unit.IsConstructing=function() return false end
@@ -789,7 +884,7 @@ class BridgeTests(unittest.TestCase):
     def test_building_visual_transitions_once_and_never_resurrect_death(self):
         self.start('play',replay='TestReplay')
         actor=self.lua.eval("""{IsA=function(self,c) return c=='/Script/Tempest.TedStructureBase' end,
-          GetFullName=function() return 'Building' end,SetActorTickEnabled=function() end,
+          GetFullName=function() return 'Building' end,SetActorEnableCollision=function() end,SetActorTickEnabled=function() end,
           ReceiveHandleConstructionVisuals=function(self,v) self.constructCalls=(self.constructCalls or 0)+1 end,
           ReceiveOnDeath=function(self) self.deathCalls=(self.deathCalls or 0)+1 end}""")
         for state in [1,1,2,2,3,3,2]: self.bridge.buildingVisuals(self.bridge,actor,state)
@@ -821,7 +916,7 @@ class BridgeTests(unittest.TestCase):
         local anim={IsValid=v,Montage_IsPlaying=function() return false end,
           Montage_Play=function(self,m,s,r,t,stop) assert(s==1 and not stop);plays=(plays or 0)+1 end}
         local a={IsA=function(self,c) return c=='/Script/Tempest.TedStructureBase' end,
-          GetFullName=function() return 'Structure' end,SetActorTickEnabled=function() end,
+          GetFullName=function() return 'Structure' end,SetActorEnableCollision=function() end,SetActorTickEnabled=function() end,
           ReceiveHandleConstructionVisuals=function() end,SpawnAnimation={IsValid=v},
           MeshComp={IsValid=v,GetAnimInstance=function() return anim end,SetComponentTickEnabled=function() end}}
         bridge:buildingVisuals(a,2);assert(plays==nil)
@@ -880,7 +975,7 @@ class BridgeTests(unittest.TestCase):
         deaths=0
         for _,name in ipairs({'Pillager','Aircraft','FlameTurret'}) do
           local a={PawnDeath={bDied=true},GetFullName=function() return name end,
-            SetActorTickEnabled=function() end,ReceiveOnDeath=function() deaths=deaths+1 end}
+            SetActorEnableCollision=function() end,SetActorTickEnabled=function() end,ReceiveOnDeath=function() deaths=deaths+1 end}
           bridge:deathVisuals(a,true);bridge:deathVisuals(a,true)
         end
         assert(deaths==3)
@@ -913,7 +1008,7 @@ class BridgeTests(unittest.TestCase):
         tip={IsValid=v,GetFullName=function() return 'Clone' end,OnTooltipShown=function() end,AddToViewport=function() end,
           SetVisibility=function() end,IsHovered=function() return hoveringPopup end,DoctrinePanelA=panel,
           RemoveFromParent=function() removed=removed+1 end}
-        original={IsValid=v,SetVisibility=function(self,x) self.visibility=x end}
+        original={IsValid=v,GetParent=function()return invalid end,IsInViewport=function()return false end,SetVisibility=function(self,x) self.visibility=x end}
         local library={IsValid=v,Create=function(self,owner,c)
           if c==cls then descriptions=descriptions+1;return {IsValid=v,OnTooltipShown=function() end,
             AddToViewport=function() end,SetVisibility=function() end,RemoveFromParent=function() removed=removed+1 end,
@@ -932,8 +1027,18 @@ class BridgeTests(unittest.TestCase):
         hoveringIcon=false;loops[50]();loops[50]();assert(descriptions==1 and removed==0)
         hoveringIcon=true;loops[50]();assert(descriptions==1 and removed==0)
         hoveringPopup=false;hoveringIcon=false
-        for i=1,5 do loops[50]() end;assert(removed==1)
-        loops[50]();assert(removed==2)
+        for i=1,5 do loops[50]() end;assert(removed==0)
+        loops[50]();assert(removed==0 and bridge.viewerDoctrinePopup==nil)
+        hoveringSource=true;bridge:activateDoctrineTooltip(nil,source,original,{IsValid=v})
+        hoveringIcon=true;loops[50]();assert(descriptions==1)
+        bridge:clearDoctrinePopup();bridge.doctrinePoll=0
+        source.GetHUD=function()return nil end;source.CustomTooltipClass={IsValid=v}
+        original.IsVisible=function()return true end;original.IsInViewport=function()return false end;original.GetVisibility=function()return 0 end
+        original.GetTargetWidget=function()return source end;original.RemoveFromParent=function()end
+        local priorFind=FindAllOf
+        FindAllOf=function(c)if c=='WBP_ThirdPartySpectator_Doctrines_Tooltip_C' then return {original} end;return priorFind(c) end
+        for i=1,9 do loops[50]();assert(bridge.viewerDoctrinePopup==nil) end
+        loops[50]();assert(bridge.viewerDoctrinePopup~=nil) -- direct Blueprint call without ProcessEvent hook
         """)
 
     def test_replay_menu_exit_ignores_hover_and_other_slots(self):

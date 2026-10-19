@@ -30,6 +30,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Launcher library tests failed' }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_update.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Updater tests failed' }
+          powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File tests/test_ui.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Launcher UI tests failed' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_guard.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Replay native guard tests failed' }
           ./Build.ps1
       - name: Publish
         env:
