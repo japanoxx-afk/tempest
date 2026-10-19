@@ -169,28 +169,44 @@ $ui.ApplySpeed.Add_Click({
   $ui.Status.Text="재생 속도 $($speed)x 적용 요청 · 게임 응답은 브리지 상태에서 확인하세요."
  } catch { Show-Error $_ }
 })
+$script:updateProcess=$null
+$script:updateStatusFile=$null
+$updateTimer=New-Object Windows.Threading.DispatcherTimer
+$updateTimer.Interval=[TimeSpan]::FromMilliseconds(500)
+$updateTimer.Add_Tick({
+ try {
+  if(Test-Path -LiteralPath $script:updateStatusFile){
+   $progress=Get-Content -LiteralPath $script:updateStatusFile -Raw | ConvertFrom-Json
+   $ui.Status.Text=$progress.message
+   $ui.Update.Content=$progress.message
+   if($progress.state -eq 'ready'){$updateTimer.Stop();$window.Close();return}
+   if($progress.state -in @('current','error')){
+    $updateTimer.Stop();$ui.Update.IsEnabled=$true;$ui.Update.Content='런처 업데이트'
+    [Windows.MessageBox]::Show($window,$progress.message,'런처 업데이트') | Out-Null
+    return
+   }
+  }
+  if($script:updateProcess.HasExited){throw "업데이트 작업이 중단되었습니다. 로그: $script:updateStatusFile.log"}
+ } catch {
+  $updateTimer.Stop();$ui.Update.IsEnabled=$true;$ui.Update.Content='런처 업데이트'
+  $ui.Status.Text=$_.Exception.Message
+  [Windows.MessageBox]::Show($window,$_.Exception.Message,'런처 업데이트 오류') | Out-Null
+ }
+})
 $ui.Update.Add_Click({
  try {
-  $ui.Update.IsEnabled = $false; $ui.Status.Text = 'GitHub에서 최신 버전을 확인합니다…'
-  $release = Invoke-RestMethod 'https://api.github.com/repos/japanoxx-afk/tempest/releases/latest' -Headers @{'User-Agent'='TempestReplayLauncher'} -TimeoutSec 20
-  $latest = [version]($release.tag_name -replace '^v','')
-  if ($latest -le [version]$version) { $ui.Status.Text = '최신 버전입니다.'; return }
-  $asset = @($release.assets | Where-Object name -eq 'TempestReplayLauncher.zip')
-  $hash = @($release.assets | Where-Object name -eq 'TempestReplayLauncher.zip.sha256')
-  if ($asset.Count -ne 1 -or $hash.Count -ne 1) { throw '릴리스의 배포 파일 또는 체크섬이 없습니다.' }
-  if ([Windows.MessageBox]::Show("v$latest 업데이트를 다운로드하고 런처를 재시작할까요?",'런처 업데이트','YesNo') -ne 'Yes') { return }
-  $stage = Join-Path $data ([guid]::NewGuid().ToString()); New-Item $stage -ItemType Directory | Out-Null
-  Invoke-WebRequest $asset[0].browser_download_url -OutFile (Join-Path $stage 'update.zip') -UseBasicParsing -TimeoutSec 120
-  $expected = (Invoke-WebRequest $hash[0].browser_download_url -UseBasicParsing -TimeoutSec 20).Content.Trim().Split(' ')[0]
-  if ($expected -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileHash (Join-Path $stage 'update.zip') -Algorithm SHA256).Hash -ne $expected) { throw '업데이트 SHA256 검증에 실패했습니다.' }
-  Expand-Archive (Join-Path $stage 'update.zip') (Join-Path $stage 'files')
-  foreach ($file in @('Launcher.ps1','Start.cmd','version.json','Bridge.ps1','ReplayBridge\Scripts\main.lua')) { if (-not (Test-Path (Join-Path $stage "files\$file"))) { throw "배포 파일 누락: $file" } }
-  if ([version](Get-Content (Join-Path $stage 'files\version.json') -Raw | ConvertFrom-Json).version -ne $latest) { throw '릴리스 버전과 배포 버전이 다릅니다.' }
-  Copy-Item (Join-Path $root 'Update.ps1') (Join-Path $stage 'Update.ps1')
-  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $stage 'Update.ps1')+'"'),'-Target',('"'+$root+'"'),'-Source',('"'+(Join-Path $stage 'files')+'"'),'-WaitPid',$PID)
-  $window.Close()
- } catch { $ui.Status.Text = "업데이트 확인 실패: $($_.Exception.Message) (아직 릴리스가 없거나 네트워크 오류일 수 있습니다.)" }
- finally { $ui.Update.IsEnabled = $true }
+  $ui.Update.IsEnabled=$false;$ui.Update.Content='최신 버전 확인 중…';$ui.Status.Text='업데이트를 확인합니다…'
+  $requestFolder=Join-Path $data ('updates\'+[guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $requestFolder -Force | Out-Null
+  $script:updateStatusFile=Join-Path $requestFolder 'status.json'
+  # A separate process keeps all network and archive work off the WPF UI thread.
+  $worker=Join-Path $root 'Update.ps1'
+  $script:updateProcess=Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-Check','-Target',('"'+$root+'"'),'-CurrentVersion',$version,'-StatusPath',('"'+$script:updateStatusFile+'"'),'-WaitPid',$PID)
+  $updateTimer.Start()
+ } catch {
+  $ui.Update.IsEnabled=$true;$ui.Update.Content='런처 업데이트';Show-Error $_
+  [Windows.MessageBox]::Show($window,$_.Exception.Message,'런처 업데이트 오류') | Out-Null
+ }
 })
 try { Refresh-Replays } catch { Show-Error $_ }
 $window.ShowDialog() | Out-Null

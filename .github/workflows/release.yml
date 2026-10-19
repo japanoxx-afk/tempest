@@ -28,6 +28,8 @@ jobs:
           }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_library.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Launcher library tests failed' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_update.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Updater tests failed' }
           ./Build.ps1
       - name: Publish
         env:
