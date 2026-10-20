@@ -68,7 +68,7 @@ function Start-BridgeSession([string]$GamePath,[ValidateSet('probe','record','pl
  if (-not (Test-Path (Join-Path $p.Runtime 'Mods\TempestReplayBridge\Scripts\main.lua'))) { throw '먼저 실험 모드를 설치하세요.' }
  if (-not (Test-Path (Join-Path $p.Runtime 'tempest-launcher-owned.json'))) { throw '이 런처가 설치한 모드가 아닙니다.' }
  # Update the Lua bridge on the next clean launch; never reload into a live match.
- foreach ($scriptFile in @('main.lua','Movement.lua')) {
+ foreach ($scriptFile in @('main.lua','Movement.lua','ReplayAudio.lua')) {
   Copy-Item (Join-Path $script:BridgeSourceRoot ('ReplayBridge\Scripts\'+$scriptFile)) (Join-Path $p.Runtime ('Mods\TempestReplayBridge\Scripts\'+$scriptFile)) -Force
  }
  # Register DemoNetDriver in the live engine from Lua. User generated INI

@@ -191,9 +191,11 @@ function movementIO:identity(actor)
     return self.codec.key(class,owner,entity),class,owner,entity
 end
 function movementIO:close()
+    if self.audio then self.audio:close();self.audio=nil end
+    self.audioController=nil
     self.animationFrames={}
     self.projectiles=nil;self.projectileTime=nil;self.doctrineApplied=nil
-    self.actorCache=nil;self.finishedTracks=nil;self.neutralMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
+    self.actorCache=nil;self.finishedTracks=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
     self.viewerDoctrinePopup=nil
     self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
@@ -410,6 +412,58 @@ function movementIO:neutralMesh(actor)
             self.neutralMeshes[name]=component
         end
         component:SetHiddenInGame(false,true);component:SetVisibility(true,true)
+        self:neutralColor(actor,component)
+    end
+end
+function movementIO:neutralColor(actor,component)
+    if mode~='play' then return end
+    local owner=actor:GetOwningPlayerID()
+    self.neutralColors=self.neutralColors or {}
+    local name=actor:GetFullName();local state=self.neutralColors[name]
+    if state and state.owner==owner and state.component==component then return end
+    local utils=StaticFindObject('/Script/Tempest.Default__TedUtils')
+    local colors=StaticFindObject('/Script/RTSColor.Default__RTSColorSubsystem')
+    if not valid(utils) or not valid(colors) then return end
+    local primary,secondary={R=0.65,G=0.65,B=0.65,A=1},{R=0.65,G=0.65,B=0.65,A=1}
+    if owner>=0 and owner<8 then
+        local preset=utils:GetPlayerColorPreset(actor,owner)
+        if not preset then return end
+        primary,secondary=preset.PrimaryColor,preset.SecondaryColor
+    end
+    local mids=state and state.mids or {}
+    for i=0,component:GetNumMaterials()-1 do
+        local mid=mids[i]
+        if not valid(mid) then mid=component:CreateDynamicMaterialInstance(i,nil,FName('None'));mids[i]=mid end
+        if valid(mid) then
+            mid:SetVectorParameterValue(colors.PrimaryPlayerColorParamName,primary)
+            mid:SetVectorParameterValue(colors.SecondaryPlayerColorParamName,secondary)
+        end
+    end
+    self.neutralColors[name]={owner=owner,component=component,mids=mids}
+end
+function movementIO:isGarrisoned(actor)
+    if mode~='play' or not actor:IsInContainer() then return false end
+    local ok,owner=pcall(function() return actor:GetPawnContainerOwner() end)
+    if not ok then return false end
+    -- Production buildings can retain a stale container flag in client demos.
+    -- A real bunker/transport owner is different: never pull its occupant out
+    -- to a companion pose or make it visible to the spectator/minimap.
+    return valid(owner) and (owner:IsA('/Script/Tempest.TedConformationBase') or owner:IsA('/Script/Tempest.TedUnitBase'))
+end
+function movementIO:garrisonVisuals(actor)
+    if mode~='play' then return end
+    self.garrisonMeshes=self.garrisonMeshes or {}
+    local name=actor:GetFullName();local mesh=actor.MeshComp
+    if self:isGarrisoned(actor) then
+        actor:SetActorHiddenInGame(true)
+        if valid(mesh) then mesh:SetHiddenInGame(true,true);mesh:SetVisibility(false,true) end
+        self.garrisonMeshes[name]=true
+    elseif self.garrisonMeshes[name] then
+        self.garrisonMeshes[name]=nil
+        if not self:isDead(actor) then
+            actor:SetActorHiddenInGame(false)
+            if valid(mesh) then mesh:SetHiddenInGame(false,true);mesh:SetVisibility(true,true) end
+        end
     end
 end
 function movementIO:deathVisuals(actor,dead)
@@ -544,12 +598,22 @@ function movementIO:updateProjectiles(time)
     if mode~='play' then return end
     self.projectiles=self.projectiles or {}
     self.projectileHooks=self.projectileHooks or {}
-    local function install(path)
+    local function install(path,hit)
         if self.projectileHooks[path] then return end
         self.projectileHooks[path]=true
         RegisterHook(path,function(context)
             if not self.projectiles then return end
             local actor=context:get();if not valid(actor) then return end
+            if hit then
+                if self.audio and not self.audio.closed then
+                    local rs=FindFirstOf('ReplaySubsystem')
+                    if valid(rs) and rs:IsPlaying() then
+                        local ok,err=pcall(function()self.audio:hit(actor,rs:GetReplayCurrentTime())end)
+                        if not ok then status('audio_error',tostring(err)) end
+                    end
+                end
+                return
+            end
             local key=actor:GetFullName();local old=self.projectiles[key]
             if old and old.retired and valid(actor.ProjectileMovement) then
                 actor:SetActorTickEnabled(true);actor.ProjectileMovement:SetComponentTickEnabled(true)
@@ -558,6 +622,7 @@ function movementIO:updateProjectiles(time)
         end)
     end
     install('/Script/Tempest.TedProjectile:ReceiveOnProjectileFired')
+    install('/Script/Tempest.TedProjectile:ReceiveOnProjectileHit',true)
     if self.projectileTime and time-self.projectileTime<0.05 then return end
     self.projectileTime=time
     local active={}
@@ -567,8 +632,9 @@ function movementIO:updateProjectiles(time)
             if not self.projectileHooks[classPath] then
                 self.projectileHooks[classPath]=true
                 cls:ForEachFunction(function(fn)
-                    if fn:GetFName():ToString()=='ReceiveOnProjectileFired' then
-                        install(classPath:gsub('^BlueprintGeneratedClass ',''):gsub('^Class ','')..':ReceiveOnProjectileFired')
+                    local name=fn:GetFName():ToString()
+                    if name=='ReceiveOnProjectileFired' or name=='ReceiveOnProjectileHit' then
+                        install(classPath:gsub('^BlueprintGeneratedClass ',''):gsub('^Class ','')..':'..name,name=='ReceiveOnProjectileHit')
                     end
                 end)
             end
@@ -618,12 +684,68 @@ function movementIO:updateProjectiles(time)
         if not active[key] and (not shot.retired or time-shot.time>35) then self.projectiles[key]=nil end
     end
 end
+function movementIO:updateReplayAudio(time)
+    if mode~='play' or self.audioFailed or type(ForEachUObject)~='function' then return end
+    if not self.audio then
+        local ok,module=pcall(require,'ReplayAudio')
+        if not ok then self.audioFailed=true;status('audio_error',tostring(module));return end
+        self.audio=module.new({objects=ForEachUObject,clock=os.time,spawn=function(pc,sound,position)
+            local util=StaticFindObject('/Script/Engine.Default__GameplayStatics')
+            local component=util:SpawnSoundAtLocation(pc,sound,position,{Pitch=0,Yaw=0,Roll=0},1,1,0,nil,nil,true)
+            if valid(component) then return component end
+            -- The demo world rejects the native location factory even at the
+            -- listener. Create an idle component, then configure positional
+            -- playback BEFORE Play; retain the asset's native attenuation.
+            component=util:CreateSound2D(pc,sound,1,1,0,nil,false,true)
+            if valid(component) then
+                component.bAllowSpatialization=true;component.bIsUISound=false
+                component.bOverrideAttenuation=false
+                component:K2_SetWorldLocation(position,false,{},false)
+                component:Play(0)
+            end
+            return component
+        end})
+        if not self.audioObserver then
+            self.audioObserver=true
+            for _,name in ipairs({'PlaySoundAtLocation','SpawnSoundAtLocation','SpawnSoundAttached'}) do
+                local attached=name=='SpawnSoundAttached'
+                local path='/Script/Engine.GameplayStatics:'..name
+                if valid(StaticFindObject(path)) then RegisterHook(path,function(context,...)
+                    if not self.audio or self.audio.closed or self.audio.spawning then return end
+                    local args={...}
+                    pcall(function()
+                        local sound=args[attached and 1 or 2]:get()
+                        local position
+                        if attached then local component=args[2]:get();if not valid(component) then return end;position=component:K2_GetComponentLocation()
+                        else position=args[3]:get() end
+                        local rs=FindFirstOf('ReplaySubsystem')
+                        if valid(rs) and rs:IsPlaying() then self.audio:observed(sound,position,rs:GetReplayCurrentTime()) end
+                    end)
+                end) end
+            end
+        end
+    end
+    local pc=self.audioController
+    if not valid(pc) then return end
+    self.audio:catalogSounds() -- warm the immutable sound lookup outside impact callbacks
+    local paused=valid(pc:GetWorld():K2_GetWorldSettings().PauserPlayerState)
+    self.audio:update(time,paused,pc)
+    if not self.audioReportTime or time-self.audioReportTime>=1 then
+        self.audioReportTime=time;local s=self.audio.stats
+        write(home..'audio-state.txt',session..'\ntime='..time..'\nplayed='..s.played..'\nnative_duplicates='..s.native..'\nmissing='..s.missing..'\nqueued='..s.queued..'\nno_tag='..s.noTag..'\nno_cue='..s.noCue..'\nspawn_failed='..s.spawnFailed..'\nlast_missing_tag='..tostring(self.audio.lastMissingTag)..'\nlast_spawn_error='..tostring(self.audio.lastSpawnError)..'\ndropped='..s.dropped..'\nactive='..#self.audio.owned..'\npaused='..tostring(paused))
+    end
+end
 function movementIO:play(subsystem)
     self.animationFrames={}
     if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
     self.playTime=subsystem:GetReplayCurrentTime()
     self.playTicks=(self.playTicks or 0)+1
     self.cacheTick=math.floor(self.playTicks/15)
+    local audioOK,audioError=pcall(function()self:updateReplayAudio(self.playTime)end)
+    if not audioOK then
+        if self.audio then self.audio:close() end
+        self.audioFailed=true;status('audio_error',tostring(audioError))
+    end
     self:retireCorpses(self.playTime)
     if not self.projectileFailed then
         local ok,err=pcall(function() self:updateProjectiles(subsystem:GetReplayCurrentTime()) end)
@@ -656,6 +778,7 @@ function movementIO:play(subsystem)
     local candidates={}
     for _,actor in ipairs(self:cachedActors('TedPawn')) do
         if valid(actor) then
+            self:garrisonVisuals(actor)
             local actorName=actor:GetFullName()
             if not (self.visualDeaths and self.visualDeaths[actorName]) then
             self:presentationTick(actor)
@@ -688,7 +811,8 @@ function movementIO:play(subsystem)
             if sample.dead or sample.building==3 then self.finishedTracks[key]=true end
         end
         if actor then self:buildingVisuals(actor,sample.building) end
-        if actor and not self:isDead(actor) and self:siteVisuals(actor,key,sample,time) then
+        if actor and self:isGarrisoned(actor) then actor:SetActorHiddenInGame(true) end
+        if actor and not self:isDead(actor) and not self:isGarrisoned(actor) and self:siteVisuals(actor,key,sample,time) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if actor:IsInContainer() then containerCorrections=containerCorrections+1 end
             if not self.visible or not self.visible[name] then
@@ -750,7 +874,7 @@ function movementIO:updateMarkers(actors,samples)
                 local origin=widget.MinimapImage.Slot:GetPosition()
                 for key,actor in pairs(actors) do
                     local sample=samples[key]
-                    if sample and not actor:IsAlive() and not self:isDead(actor) and not (self.absent and self.absent[actor:GetFullName()]) then
+                    if sample and not actor:IsAlive() and not self:isDead(actor) and not self:isGarrisoned(actor) and not (self.absent and self.absent[actor:GetFullName()]) then
                         seen[key]=true
                         local pin=pins[key]
                         if not valid(pin) then
@@ -1105,6 +1229,7 @@ end
 local function finishReplay(pc)
     if viewerFinished then return end
     viewerFinished=true;followTarget=nil
+    if movementIO.audio then movementIO.audio:close() end
     local settings=pc:GetWorld():K2_GetWorldSettings()
     if not valid(settings.PauserPlayerState) then command(pc,'demopause') end
     local ok,err=pcall(function()
@@ -1126,6 +1251,7 @@ local function finishReplay(pc)
     status('viewer_finished','리플레이 종료 · 저장된 마지막 시점. 승패 정보가 없는 파일에서는 결과를 추정하지 않습니다.'..(ok and '' or ' / banner: '..tostring(err)))
 end
 local function configureViewer(pc)
+    movementIO.audioController=pc
     movementIO:installDoctrineHover()
     pc.bShowMouseCursor = true
     pc.bEnableClickEvents = true
@@ -1483,7 +1609,8 @@ gameLoop(1000, function()
                         for _, actor in ipairs(FindAllOf('TedPawn') or {}) do
                             local name = actor:GetFullName()
                             local neutral=actor:IsA('/Script/Tempest.TedConformationBase')
-                            if movementIO:isPresentationPawn(actor) and not movementIO:isDead(actor) and (neutral or actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and (neutral or not (movementIO.absent and movementIO.absent[name])) and (neutral or not actor:IsInContainer()) then
+                            if movementIO:isGarrisoned(actor) then actor:SetActorHiddenInGame(true) end
+                            if movementIO:isPresentationPawn(actor) and not movementIO:isDead(actor) and not movementIO:isGarrisoned(actor) and (neutral or actor:IsAlive() or (movementIO.visible and movementIO.visible[name])) and (neutral or not (movementIO.absent and movementIO.absent[name])) and (neutral or not actor:IsInContainer()) then
                                 local first=not viewerActors[name]
                                 if first or actor.bHidden or hudVisibilityRefresh then
                                     actor:K2_SetDefaultVisibility(true,true)

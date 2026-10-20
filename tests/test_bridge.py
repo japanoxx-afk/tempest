@@ -600,6 +600,52 @@ class BridgeTests(unittest.TestCase):
         path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nP\t1\t110\t20\t30\t0\t0\t0\nE\n')
         self.lua.execute('unit.IsInContainer=function() return true end;replayPlaying=true;loops[16]();assert(locationWrites==1)')
 
+    def test_real_garrison_owner_is_not_a_stale_production_container(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function()return true end
+        local kind='/Script/Tempest.TedConformationBase'
+        local owner={IsValid=v,IsA=function(self,c)return c==kind end}
+        local unit={IsValid=v,IsInContainer=function()return true end,GetPawnContainerOwner=function()return owner end}
+        assert(bridge:isGarrisoned(unit))
+        kind='/Script/Tempest.TedUnitBase';assert(bridge:isGarrisoned(unit))
+        kind='/Script/Tempest.TedProductionStructure';assert(not bridge:isGarrisoned(unit))
+        unit.IsInContainer=function()return false end;assert(not bridge:isGarrisoned(unit))
+        """)
+
+    def test_neutral_presentation_materials_follow_capture_owner_without_reallocation(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function()return true end
+        ownerID=0;allocations=0;updates=0
+        local mid={IsValid=v,SetVectorParameterValue=function(self,k,c)updates=updates+1;lastColor=c.R end}
+        local component={IsValid=v,GetNumMaterials=function()return 1 end,CreateDynamicMaterialInstance=function()allocations=allocations+1;return mid end}
+        local actor={GetFullName=function()return 'Neutral' end,GetOwningPlayerID=function()return ownerID end}
+        local utils={IsValid=v,GetPlayerColorPreset=function(self,a,id)return {PrimaryColor={R=id+1},SecondaryColor={R=id+1}}end}
+        local colors={IsValid=v,PrimaryPlayerColorParamName='Player Color',SecondaryPlayerColorParamName='Player Color Secondary'}
+        StaticFindObject=function(p)if p:find('TedUtils')then return utils end;return colors end
+        bridge:neutralColor(actor,component);bridge:neutralColor(actor,component)
+        assert(allocations==1 and updates==2 and lastColor==1)
+        ownerID=1;bridge:neutralColor(actor,component);assert(allocations==1 and updates==4 and lastColor==2)
+        """)
+
+    def test_garrison_mesh_stays_hidden_then_reappears_on_unload(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function()return true end
+        local inside=true
+        local mesh={IsValid=v,SetHiddenInGame=function(self,on)self.hidden=on end,SetVisibility=function(self,on)self.visible=on end}
+        local owner={IsValid=v,IsA=function(self,c)return c=='/Script/Tempest.TedConformationBase' end}
+        local actor={MeshComp=mesh,GetFullName=function()return 'occupant' end,
+          IsInContainer=function()return inside end,GetPawnContainerOwner=function()return owner end,
+          SetActorHiddenInGame=function(self,on)self.hidden=on end}
+        bridge.isDead=function()return false end
+        bridge:garrisonVisuals(actor);assert(actor.hidden and mesh.hidden and not mesh.visible)
+        actor.hidden=false;mesh.visible=true
+        bridge:garrisonVisuals(actor);assert(actor.hidden and not mesh.visible)
+        inside=false;bridge:garrisonVisuals(actor);assert(not actor.hidden and not mesh.hidden and mesh.visible)
+        """)
+
     def test_replay_projectiles_retire_after_destination_and_can_be_reused(self):
         self.start('play',replay='TestReplay')
         self.lua.globals().bridge=self.bridge
