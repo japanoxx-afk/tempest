@@ -37,6 +37,15 @@ class MovementTests(unittest.TestCase):
         assert(r:at(2.2)['Tank_C:1:2076']==nil);r:close()
         ''')
 
+    def test_consumed_death_payloads_are_not_retained_or_scanned_again(self):
+        self.lua.execute('''
+        w=M.writer(path,'Test');w:frame(0,{unit(0)})
+        local u=unit(10);u.dead=true;w:frame(1,{u});w:frame(2,{u});w:frame(3,{});w:close()
+        r=M.reader(path,'Test');r:at(1);assert(next(r.deaths)==nil)
+        r:at(2);assert(next(r.deaths)==nil and r.deliveredDeaths['Tank_C:1:2076'])
+        assert(r:at(3)['Tank_C:1:2076']==nil)
+        ''')
+
     def test_building_states_change_at_recorded_time_without_interpolation(self):
         self.lua.execute("""
         w=M.writer(path,'Test');u=unit(0,0);u.building=1;w:frame(0,{u})

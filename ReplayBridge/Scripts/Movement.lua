@@ -135,7 +135,7 @@ function M.reader(path,name)
             elseif a[1]=='D' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
                 assert(version>=3 and #a==2 and unit and not unit.dead,'Invalid death record');unit.dead=true
-                if not self.deaths[key] then self.deaths[key]={time=frame.time,unit=unit} end
+                if not self.deliveredDeaths[key] and not self.deaths[key] then self.deaths[key]={time=frame.time,unit=unit} end
             elseif a[1]=='C' then
                 local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
                 local footprint,progress=tonumber(a[3]),tonumber(a[4])
@@ -175,6 +175,7 @@ function M.reader(path,name)
                 result[key]={position=u.position,rotation=u.rotation,building=u.building,
                     dead=true,site=u.site,velocity={X=0,Y=0,Z=0}}
                 self.deliveredDeaths[key]=true
+                self.deaths[key]=nil -- consumed tombstones need no per-frame scan
             end
         end
         return result

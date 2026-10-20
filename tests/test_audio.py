@@ -43,6 +43,8 @@ class AudioTests(unittest.TestCase):
         self.lua.execute("actor.HitGameplayCue.GameplayCueTag.TagName.ToString=function()return 'Unsupported' end;s:hit(actor,1);assert(s.stats.missing==1 and #s.pending==0)")
     def test_spawn_error_is_reported_separately_from_missing_cue(self):
         self.lua.execute("api.spawn=function()error('factory failed')end;s:hit(actor,1);s:update(1.1,false,context);assert(s.stats.spawnFailed==1 and s.stats.noCue==0 and s.lastSpawnError:find('factory failed'));assert(not s.spawning)")
+    def test_finished_owned_component_is_explicitly_released(self):
+        self.lua.execute('destroyed=0;api.destroy=function()destroyed=destroyed+1 end;s:hit(actor,1);s:update(1.1,false,context);playing=false;s:update(1.2,false,context);s:close();assert(destroyed==1 and #s.owned==0)')
     def test_pool_reset_uses_retained_target_position(self):
         self.lua.execute('actor.TargetLocation={X=5000,Y=20,Z=30};s:hit(actor,1);s:update(1.1,false,context);assert(lastPos.X==5000)')
     def test_target_specific_cue_is_preferred(self):

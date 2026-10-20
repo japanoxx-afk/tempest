@@ -613,6 +613,41 @@ class BridgeTests(unittest.TestCase):
         unit.IsInContainer=function()return false end;assert(not bridge:isGarrisoned(unit))
         """)
 
+    def test_container_inventory_handles_missing_pawn_flag_and_excludes_factory(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function()return true end
+        local kind='/Script/Tempest.TedConformationBase'
+        local owner={IsValid=v,IsA=function(self,c)return c==kind end}
+        local pawn={IsValid=v,GetFullName=function()return 'stored' end,IsInContainer=function()return false end}
+        local component={IsValid=v,GetOwner=function()return owner end,GetStoredPawns=function()return {pawn}end}
+        FindAllOf=function(c)if c=='TedPawnContainerComponent'then return {component}end;return {}end
+        bridge.cacheTick=1;bridge:refreshContainers();assert(bridge:isGarrisoned(pawn))
+        kind='/Script/Tempest.TedProductionStructure';bridge.cacheTick=2;bridge:refreshContainers();assert(not bridge:isGarrisoned(pawn))
+        """)
+
+    def test_garrison_hides_weapon_and_selection_components_and_restores_prior_flags(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local v=function()return true end
+        local inside=true
+        local function mesh(h,s)return {IsValid=v,GetFullName=function(self)return tostring(self)end,bHiddenInGame=h,bVisible=s,SetHiddenInGame=function(self,x)self.bHiddenInGame=x end,SetVisibility=function(self,x)self.bVisible=x end}end
+        local body,selection,gun=mesh(true,false),mesh(true,false),mesh(false,true)
+        local collision=true
+        local child={IsValid=v,GetFullName=function()return "attached"end,bHidden=false,IsA=function()return false end,SetActorHiddenInGame=function(self,x)self.bHidden=x end,K2_GetComponentsByClass=function()return {gun}end}
+        local owner={IsValid=v,IsA=function(self,c)return c=='/Script/Tempest.TedConformationBase'end}
+        local pawn={MeshComp=body,GetFullName=function()return 'stored'end,IsInContainer=function()return inside end,GetPawnContainerOwner=function()return owner end,SetActorHiddenInGame=function(self,x)self.hidden=x end,
+          K2_GetComponentsByClass=function()return {body,selection}end,GetAttachedActors=function(self,out)out[1]=child end,
+          GetActorEnableCollision=function()return collision end,SetActorEnableCollision=function(self,on)collision=on end}
+        local old=StaticFindObject;StaticFindObject=function(p)if p=='/Script/Engine.SceneComponent'then return {IsValid=v}end;return old(p)end
+        bridge.isDead=function()return false end
+        bridge:garrisonVisuals(pawn);assert(not body.bVisible and not gun.bVisible and child.bHidden and not collision)
+        for i=1,3 do
+          inside=false;bridge:garrisonVisuals(pawn);assert(body.bVisible and not body.bHiddenInGame and gun.bVisible and not child.bHidden and collision);assert(selection.bHiddenInGame and not selection.bVisible)
+          if i<3 then inside=true;bridge:garrisonVisuals(pawn);assert(not body.bVisible and not gun.bVisible and child.bHidden)end
+        end
+        """)
+
     def test_neutral_presentation_materials_follow_capture_owner_without_reallocation(self):
         self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
         self.lua.execute("""
@@ -634,7 +669,7 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("""
         local v=function()return true end
         local inside=true
-        local mesh={IsValid=v,SetHiddenInGame=function(self,on)self.hidden=on end,SetVisibility=function(self,on)self.visible=on end}
+        local mesh={IsValid=v,GetFullName=function()return "mesh"end,SetHiddenInGame=function(self,on)self.hidden=on end,SetVisibility=function(self,on)self.visible=on end}
         local owner={IsValid=v,IsA=function(self,c)return c=='/Script/Tempest.TedConformationBase' end}
         local actor={MeshComp=mesh,GetFullName=function()return 'occupant' end,
           IsInContainer=function()return inside end,GetPawnContainerOwner=function()return owner end,
@@ -687,6 +722,48 @@ class BridgeTests(unittest.TestCase):
         bridge:retireCorpses(13);assert(hidden and not ticking and bridge.retiredCorpses==1)
         bridge:deathVisuals(a,true);bridge:retireCorpses(30)
         assert(deaths==1 and bridge.retiredCorpses==1 and next(bridge.corpseQueue)==nil)
+        ''')
+
+    def test_retired_corpse_stops_owned_fx_audio_after_grace_and_preserves_passengers(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        local v=function()return true end;local a
+        local function scene(kind)
+          return {IsValid=v,GetFullName=function(self)return tostring(self)end,GetOwner=function()return a end,IsPaused=function(self)return self.paused end,IsPlaying=function(self)return self.playing end,SetVolumeMultiplier=function(self,x)self.VolumeMultiplier=x end,IsA=function(self,c)return c==kind or (kind=='/Script/Niagara.NiagaraComponent' and c=='/Script/Engine.FXSystemComponent')end,
+            SetHiddenInGame=function(self,x)self.hidden=x end,SetVisibility=function(self,x)self.visible=x end,
+            SetComponentTickEnabled=function(self,x)self.tick=x end,Deactivate=function(self)self.stopped=true end,
+            Stop=function(self)self.stopped=true;self.playing=false end,SetPaused=function(self,x)self.paused=x end,SetRenderingEnabled=function(self,x)self.render=x end}
+        end
+        local fx,audio=scene('/Script/Niagara.NiagaraComponent'),scene('/Script/Engine.AudioComponent')
+        local passenger={IsValid=v,IsA=function(self,c)return c=='/Script/Tempest.TedPawn'end,
+          SetActorHiddenInGame=function()error('living passenger must not be retired with its carrier')end}
+        a={GetFullName=function()return 'dead'end,IsValid=v,SetActorHiddenInGame=function()end,SetActorEnableCollision=function()end,SetActorTickEnabled=function()end,
+          K2_GetComponentsByClass=function()return {fx,audio}end,GetAttachedActors=function(self,out)out[1]=passenger end}
+        local old=StaticFindObject;StaticFindObject=function(p)if p=='/Script/Engine.SceneComponent'then return {IsValid=v}end;return old(p)end
+        bridge.corpseQueue={dead={actor=a,untilTime=3}}
+        bridge:retireCorpses(2.9);assert(not fx.stopped and not audio.stopped)
+        bridge:retireCorpses(3);assert(fx.stopped and fx.paused and fx.render==false and fx.tick==false and fx.hidden and not fx.visible)
+        assert(audio.stopped and audio.tick==false and audio.hidden and audio.VolumeMultiplier==0);fx.paused=false;audio.playing=true;audio.VolumeMultiplier=1;bridge:maintainRetiredResources();assert(fx.paused and not audio.playing and audio.VolumeMultiplier==0)
+        ''')
+
+    def test_retired_resource_maintenance_has_a_per_frame_budget(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        local owner={IsValid=function()return true end,GetFullName=function()return 'dead'end}
+        bridge.retiredResources={};bridge.retiredResourceKeys={};stops=0;checks=0
+        for i=1,20 do
+          local c={IsValid=function()return true end,GetOwner=function()return owner end,VolumeMultiplier=1,playing=true,
+            SetVolumeMultiplier=function(self,x)self.VolumeMultiplier=x end,
+            IsPlaying=function(self)checks=checks+1;return self.playing end,
+            Stop=function(self)stops=stops+1;self.playing=false end}
+          bridge.retiredResources[i]={key=tostring(i),owner='dead',component=c,kind='audio'}
+        end
+        bridge:maintainRetiredResources();assert(checks==16 and stops==16)
+        bridge:maintainRetiredResources();assert(checks==32 and stops==20)
+        local c=bridge.retiredResources[1].component;c.GetOwner=function()return {IsValid=function()return true end,GetFullName=function()return 'living'end}end;c.VolumeMultiplier=1
+        bridge:maintainRetiredResources(20);assert(c.VolumeMultiplier==1 and #bridge.retiredResources==19)
+        bridge.retiredResources[1].component.IsValid=function()return false end
+        bridge:maintainRetiredResources(20);assert(#bridge.retiredResources==18)
         ''')
 
     def test_actor_discovery_cache_expires_and_clears_at_teardown(self):
@@ -1163,7 +1240,8 @@ class BridgeTests(unittest.TestCase):
         local color={R=0.2,G=0.4,B=0.8,A=1}
         local utils={IsValid=valid,GetWorldBounds=function() return {} end,
           GetPlayerColorPreset=function() return {PrimaryColor=color} end}
-        local ui={IsValid=valid,CalculateMinimapLocation=function(self,b,p,s,out) out.X=75;out.Y=125 end}
+        projections=0
+        local ui={IsValid=valid,CalculateMinimapLocation=function(self,b,p,s,out) projections=projections+1;out.X=75;out.Y=125 end}
         local old=StaticFindObject;StaticFindObject=function(p)
           if p=='/Script/Tempest.Default__TedUtils' then return utils end
           if p=='/Script/Tempest.Default__TedUIFunctionsLibrary' then return ui end
@@ -1189,7 +1267,8 @@ class BridgeTests(unittest.TestCase):
         bridge:updateMarkers(actors,samples)
         assert(created==1 and pin.visibility==3 and pin.color==color)
         assert(pin.Slot.size.X==5 and pin.Slot.position.X==72.5 and pin.Slot.position.Y==122.5)
-        bridge:updateMarkers(actors,samples);assert(created==1)
+        bridge:updateMarkers(actors,samples);assert(created==1 and projections==1)
+        samples.track.position.X=31;bridge:updateMarkers(actors,samples);assert(projections==2)
         bridge:updateMarkers({},{});assert(removed==1 and next(bridge.maps.Map)==nil)
         """)
 

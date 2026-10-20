@@ -59,8 +59,9 @@ function M.new(api)
      entry.paused=paused
     end
     -- A misconfigured looping asset must not leak from this one-shot path.
-    if not paused and api.clock()-entry.created>8 then entry.component:Stop()
-    elseif entry.component:IsPlaying() or paused then active[#active+1]=entry end
+    if not paused and api.clock()-entry.created>8 then entry.component:Stop();if api.destroy then api.destroy(entry.component) end
+    elseif entry.component:IsPlaying() or paused then active[#active+1]=entry
+    elseif api.destroy then api.destroy(entry.component) end
    end
   end
   self.owned=active
@@ -92,7 +93,7 @@ function M.new(api)
  end
  function s:close()
   if self.closed then return end;self.closed=true
-  for _,entry in ipairs(self.owned)do if valid(entry.component) then entry.component:Stop() end end
+  for _,entry in ipairs(self.owned)do if valid(entry.component) then entry.component:Stop();if api.destroy then api.destroy(entry.component) end end end
   self.pending={};self.owned={};self.recent={};self.hits={};self.catalog={}
  end
  return s

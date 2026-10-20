@@ -155,9 +155,13 @@ end
 local worldKey, recordingWorld, startedAt, playSent, prepared
 local movementIO={}
 function movementIO:isDead(actor)
-    if self.visualDeaths and self.visualDeaths[actor:GetFullName()] then return true end
+    local name=actor:GetFullName()
+    if self.visualDeaths and self.visualDeaths[name] then return true end
+    if mode=='play' and self.deadFrame and self.deadFrame[name]~=nil then return self.deadFrame[name] end
     local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
-    return ok and dead==true
+    dead=ok and dead==true
+    if mode=='play' and self.deadFrame then self.deadFrame[name]=dead end
+    return dead
 end
 function movementIO:isPresentationPawn(actor)
     local name=actor:GetFullName()
@@ -194,8 +198,8 @@ function movementIO:close()
     if self.audio then self.audio:close();self.audio=nil end
     self.audioController=nil
     self.animationFrames={}
-    self.projectiles=nil;self.projectileTime=nil;self.doctrineApplied=nil
-    self.actorCache=nil;self.finishedTracks=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
+    self.retiredResources=nil;self.retiredResourceKeys=nil;self.retiredResourceCursor=nil;self.projectiles=nil;self.projectileActors=nil;self.projectileTime=nil;self.doctrineApplied=nil
+    self.actorCache=nil;self.finishedTracks=nil;self.contained=nil;self.containerEpoch=nil;self.watchedPawns=nil;self.pawnKinds=nil;self.deadFrame=nil;self.markerStates=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
     self.viewerDoctrinePopup=nil
     self.maps=nil -- Widgets belong to their HUD; never touch old-world widgets during teardown.
     if self.writer then
@@ -215,6 +219,7 @@ function movementIO:resetMarkers()
         end
     end
     self.maps=nil
+    self.markerStates=nil
     self.markerTime=nil
 end
 function movementIO:updateLocomotion(actor,velocity)
@@ -359,6 +364,67 @@ function movementIO:cachedActors(className)
     end
     return entry.items
 end
+function movementIO:retireScene(actor)
+    if mode~='play' then return end
+    local cls=StaticFindObject('/Script/Engine.SceneComponent')
+    if not valid(cls) then return end
+    local function stop(owner)
+        local ok,components=pcall(function()return owner:K2_GetComponentsByClass(cls)end)
+        if not ok then return end
+        for _,entry in ipairs(components) do
+            local got,c=pcall(function()return entry:get()end);if not got then c=entry end
+            if valid(c) then
+                local niagara=c:IsA('/Script/Niagara.NiagaraComponent')
+                local audio=c:IsA('/Script/Engine.AudioComponent')
+                local fx=c:IsA('/Script/Engine.FXSystemComponent')
+                c:SetHiddenInGame(true,false);c:SetVisibility(false,false)
+                c:SetComponentTickEnabled(false)
+                if fx then
+                    c:Deactivate()
+                    -- Niagara can remain logically active while draining. A
+                    -- retained demo corpse must not keep its shared simulation
+                    -- running after the original destruction grace period.
+                    if niagara and valid(c) then c:SetPaused(true);c:SetRenderingEnabled(false) end
+                elseif audio then c:SetVolumeMultiplier(0);c:Stop() end
+                local kind=niagara and 'niagara' or (audio and 'audio')
+                if kind and valid(c) then
+                    self.retiredResources=self.retiredResources or {};self.retiredResourceKeys=self.retiredResourceKeys or {}
+                    local key=c:GetFullName()
+                    if not self.retiredResourceKeys[key] then
+                        self.retiredResourceKeys[key]=true
+                        self.retiredResources[#self.retiredResources+1]={key=key,component=c,owner=actor:GetFullName(),kind=kind}
+                    end
+                end
+            end
+        end
+    end
+    stop(actor)
+    -- Separate cue actors may be pooled/re-attached to living targets. Their
+    -- lifecycle is independent; quarantine only components owned by this pawn.
+end
+function movementIO:maintainRetiredResources(limit)
+    if mode~='play' then return end
+    local resources=self.retiredResources or {}
+    for _=1,math.min(limit or 16,#resources) do
+        local i=self.retiredResourceCursor or 1;if i>#resources then i=1 end
+        local e=resources[i];local c=e.component
+        local owner
+        if valid(c) then owner=c:GetOwner() end
+        if not valid(owner) or owner:GetFullName()~=e.owner then
+            self.retiredResourceKeys[e.key]=nil;table.remove(resources,i)
+        else
+            -- Demo/ECS updates can restart a stopped movement loop or unpause
+            -- Niagara after retirement. Keep work bounded instead of rescanning
+            -- every corpse/component each frame.
+            if e.kind=='audio' then
+                if c.VolumeMultiplier~=0 then c:SetVolumeMultiplier(0) end
+                if c:IsPlaying() then c:Stop() end
+            elseif not c:IsPaused() then c:Deactivate();if valid(c) then c:SetPaused(true);c:SetRenderingEnabled(false);c:SetComponentTickEnabled(false) end end
+            i=i+1
+        end
+        self.retiredResourceCursor=i
+    end
+end
 function movementIO:retireCorpses(time)
     for name,entry in pairs(self.corpseQueue or {}) do
         local actor=entry.actor
@@ -370,8 +436,10 @@ function movementIO:retireCorpses(time)
             actor:SetActorHiddenInGame(true)
             local mesh=actor.MeshComp
             if valid(mesh) then mesh:SetHiddenInGame(true,true);mesh:SetComponentTickEnabled(false) end
+            self:retireScene(actor) -- after the existing native death-presentation grace period
             actor:SetActorTickEnabled(false)
             self.corpseQueue[name]=nil
+            if self.garrisonMeshes then self.garrisonMeshes[name]=nil end
             self.retiredCorpses=(self.retiredCorpses or 0)+1
         end
     end
@@ -442,7 +510,9 @@ function movementIO:neutralColor(actor,component)
     self.neutralColors[name]={owner=owner,component=component,mids=mids}
 end
 function movementIO:isGarrisoned(actor)
-    if mode~='play' or not actor:IsInContainer() then return false end
+    if mode~='play' then return false end
+    if self.contained and self.contained[actor:GetFullName()] then return true end
+    if not actor:IsInContainer() then return false end
     local ok,owner=pcall(function() return actor:GetPawnContainerOwner() end)
     if not ok then return false end
     -- Production buildings can retain a stale container flag in client demos.
@@ -450,19 +520,92 @@ function movementIO:isGarrisoned(actor)
     -- to a companion pose or make it visible to the spectator/minimap.
     return valid(owner) and (owner:IsA('/Script/Tempest.TedConformationBase') or owner:IsA('/Script/Tempest.TedUnitBase'))
 end
+function movementIO:refreshContainers()
+    if mode~='play' or self.containerEpoch==self.cacheTick then return end
+    self.containerEpoch=self.cacheTick;self.contained={}
+    for _,component in ipairs(self:cachedActors('TedPawnContainerComponent')) do
+        if valid(component) then
+            local owner=component:GetOwner()
+            -- Factories also have container components. Only actual garrisons
+            -- and transports may override a missing pawn-side replicated flag.
+            if valid(owner) and (owner:IsA('/Script/Tempest.TedConformationBase') or owner:IsA('/Script/Tempest.TedUnitBase')) then
+                for _,entry in ipairs(component:GetStoredPawns()) do
+                    local ok,pawn=pcall(function()return entry:get()end);if not ok then pawn=entry end
+                    if valid(pawn) then self.contained[pawn:GetFullName()]=owner end
+                end
+            end
+        end
+    end
+    if not self.containerHook and valid(StaticFindObject('/Script/Tempest.TedPawnContainerComponent:OnRep_PawnsInContainer')) then
+        self.containerHook=true
+        RegisterHook('/Script/Tempest.TedPawnContainerComponent:OnRep_PawnsInContainer',function()self.containerEpoch=nil end)
+    end
+end
 function movementIO:garrisonVisuals(actor)
     if mode~='play' then return end
     self.garrisonMeshes=self.garrisonMeshes or {}
-    local name=actor:GetFullName();local mesh=actor.MeshComp
+    local name=actor:GetFullName();local state=self.garrisonMeshes[name]
+    local function restore(entry)
+        local c=entry.component
+        if valid(c) then local hidden=entry.hidden==true;if entry.primary then hidden=false end;c:SetHiddenInGame(hidden,false);c:SetVisibility(entry.primary or entry.visible~=false,false) end
+    end
     if self:isGarrisoned(actor) then
         actor:SetActorHiddenInGame(true)
-        if valid(mesh) then mesh:SetHiddenInGame(true,true);mesh:SetVisibility(false,true) end
-        self.garrisonMeshes[name]=true
-    elseif self.garrisonMeshes[name] then
+        if not state then
+            state={actor=actor,components={},actors={}};self.garrisonMeshes[name]=state
+            local ok,enabled=pcall(function()return actor:GetActorEnableCollision()end)
+            if ok and enabled==true then state.collision=true end -- never own the game's already-disabled collision
+        end
+        if state.collision~=nil then actor:SetActorEnableCollision(false) end
+        if state.epoch~=self.cacheTick or not state.discovered then
+            state.epoch=self.cacheTick;state.discovered=true
+            local oldComponents,oldActors={},{}
+            for _,e in ipairs(state.components) do if valid(e.component) then oldComponents[e.component:GetFullName()]=e end end
+            for _,e in ipairs(state.actors) do if valid(e.actor) then oldActors[e.actor:GetFullName()]=e end end
+            state.components={};state.actors={}
+            local primary=valid(actor.MeshComp) and actor.MeshComp:GetFullName()
+            local collected={}
+            local function collect(c)
+                if not valid(c) then return end
+                local key=c:GetFullName();if collected[key] then return end;collected[key]=true
+                local e=oldComponents[key] or {component=c,hidden=c.bHiddenInGame,visible=c.bVisible,primary=key==primary}
+                oldComponents[key]=nil;state.components[#state.components+1]=e
+            end
+            local function remember(owner)
+                -- Decals are SceneComponents, not PrimitiveComponents. Include
+                -- selection rings, widget components and attached FX as well.
+                local cls=StaticFindObject('/Script/Engine.SceneComponent')
+                if not valid(cls) then return end
+                local got,components=pcall(function()return owner:K2_GetComponentsByClass(cls)end)
+                if not got then return end
+                for _,entry in ipairs(components) do
+                    local ok,c=pcall(function()return entry:get()end);if not ok then c=entry end
+                    collect(c)
+                end
+            end
+            remember(actor)
+            collect(member(actor,'SelectionDecal')) -- pooled selection decals need not be owned by the pawn
+            local attached={};local ok=pcall(function()actor:GetAttachedActors(attached,true,false)end)
+            if ok then for _,entry in ipairs(attached) do
+                local got,child=pcall(function()return entry:get()end);if not got then child=entry end
+                if valid(child) and not child:IsA('/Script/Tempest.TedPawn') and not child:IsA('/Script/Tempest.TedProjectile') then
+                    local key=child:GetFullName();local e=oldActors[key] or {actor=child,hidden=child.bHidden};oldActors[key]=nil
+                    state.actors[#state.actors+1]=e;remember(child)
+                end
+            end end
+            for _,e in pairs(oldComponents) do restore(e) end
+            for _,e in pairs(oldActors) do if valid(e.actor) then e.actor:SetActorHiddenInGame(e.hidden==true) end end
+            if #state.components==0 and valid(actor.MeshComp) then state.components[1]={component=actor.MeshComp,hidden=false,visible=true,primary=true} end
+        end
+        for _,e in ipairs(state.components) do if valid(e.component) then e.component:SetHiddenInGame(true,false);e.component:SetVisibility(false,false) end end
+        for _,e in ipairs(state.actors) do if valid(e.actor) then e.actor:SetActorHiddenInGame(true) end end
+    elseif state then
         self.garrisonMeshes[name]=nil
         if not self:isDead(actor) then
             actor:SetActorHiddenInGame(false)
-            if valid(mesh) then mesh:SetHiddenInGame(false,true);mesh:SetVisibility(true,true) end
+            if state.collision~=nil then actor:SetActorEnableCollision(state.collision) end
+            for _,e in ipairs(state.components) do restore(e) end
+            for _,e in ipairs(state.actors) do if valid(e.actor) then e.actor:SetActorHiddenInGame(e.hidden==true) end end
         end
     end
 end
@@ -597,6 +740,7 @@ end
 function movementIO:updateProjectiles(time)
     if mode~='play' then return end
     self.projectiles=self.projectiles or {}
+    self.projectileActors=self.projectileActors or {}
     self.projectileHooks=self.projectileHooks or {}
     local function install(path,hit)
         if self.projectileHooks[path] then return end
@@ -626,8 +770,13 @@ function movementIO:updateProjectiles(time)
     if self.projectileTime and time-self.projectileTime<0.05 then return end
     self.projectileTime=time
     local active={}
+    local seen={}
     for _,actor in ipairs(self:cachedActors('TedProjectile')) do
-        if valid(actor) and valid(actor.ProjectileMovement) then
+        local key=valid(actor) and actor:GetFullName()
+        local info=key and self.projectileActors[key]
+        if key then seen[key]=true end
+        if key and (not info or not valid(info.movement)) then
+            info={movement=actor.ProjectileMovement};self.projectileActors[key]=info
             local cls=actor:GetClass();local classPath=cls:GetFullName()
             if not self.projectileHooks[classPath] then
                 self.projectileHooks[classPath]=true
@@ -641,14 +790,16 @@ function movementIO:updateProjectiles(time)
         end
         -- Tracer Blueprints can keep bHidden=true while their FX components are
         -- visible. Movement activity, rather than actor visibility, owns a shot.
-        if valid(actor) and valid(actor.ProjectileMovement) and actor.ProjectileMovement:IsActive() then
-            local key=actor:GetFullName();local p=actor:K2_GetActorLocation()
+        if info and valid(info.movement) and info.movement:IsActive() then
+            local p=actor:K2_GetActorLocation()
             local start=actor.StartLocation;local dest=actor.TargetLocation
-            local signature=table.concat({start.X,start.Y,start.Z,dest.X,dest.Y,dest.Z},':')
             local shot=self.projectiles[key]
-            if not shot or shot.signature~=signature then shot={signature=signature,time=time};self.projectiles[key]=shot end
+            if not shot or shot.sx~=start.X or shot.sy~=start.Y or shot.sz~=start.Z or shot.dx~=dest.X or shot.dy~=dest.Y or shot.dz~=dest.Z then
+                shot={sx=start.X,sy=start.Y,sz=start.Z,dx=dest.X,dy=dest.Y,dz=dest.Z,time=time};self.projectiles[key]=shot
+            end
             active[key]=shot
-            local target=valid(actor.Target) and actor.Target:K2_GetActorLocation() or dest
+            local targetActor=actor.Target
+            local target=valid(targetActor) and targetActor:K2_GetActorLocation() or dest
             local dx,dy,dz=target.X-start.X,target.Y-start.Y,target.Z-start.Z
             local range=math.sqrt(dx*dx+dy*dy+dz*dz)
             local x,y,z=p.X-start.X,p.Y-start.Y,p.Z-start.Z
@@ -657,7 +808,7 @@ function movementIO:updateProjectiles(time)
             local passed=range>1 and (x*dx+y*dy+z*dz)/(range*range)>1.05
             if not shot.retired and (passed or time-shot.time>30) then
                 actor:SetActorHiddenInGame(true)
-                actor.ProjectileMovement:Deactivate();actor.ProjectileMovement:SetComponentTickEnabled(false)
+                info.movement:Deactivate();info.movement:SetComponentTickEnabled(false)
                 local fxClass=StaticFindObject('/Script/Engine.FXSystemComponent')
                 if valid(fxClass) then
                     local components=actor:K2_GetComponentsByClass(fxClass)
@@ -683,13 +834,16 @@ function movementIO:updateProjectiles(time)
     for key,shot in pairs(self.projectiles) do
         if not active[key] and (not shot.retired or time-shot.time>35) then self.projectiles[key]=nil end
     end
+    for key in pairs(self.projectileActors) do if not seen[key] then self.projectileActors[key]=nil end end
 end
 function movementIO:updateReplayAudio(time)
     if mode~='play' or self.audioFailed or type(ForEachUObject)~='function' then return end
     if not self.audio then
         local ok,module=pcall(require,'ReplayAudio')
         if not ok then self.audioFailed=true;status('audio_error',tostring(module));return end
-        self.audio=module.new({objects=ForEachUObject,clock=os.time,spawn=function(pc,sound,position)
+        self.audio=module.new({objects=ForEachUObject,clock=os.time,destroy=function(component)
+            if valid(component) then component:K2_DestroyComponent(component:GetOwner()) end
+        end,spawn=function(pc,sound,position)
             local util=StaticFindObject('/Script/Engine.Default__GameplayStatics')
             local component=util:SpawnSoundAtLocation(pc,sound,position,{Pitch=0,Yaw=0,Roll=0},1,1,0,nil,nil,true)
             if valid(component) then return component end
@@ -737,16 +891,19 @@ function movementIO:updateReplayAudio(time)
 end
 function movementIO:play(subsystem)
     self.animationFrames={}
+    self.deadFrame={}
     if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
     self.playTime=subsystem:GetReplayCurrentTime()
     self.playTicks=(self.playTicks or 0)+1
     self.cacheTick=math.floor(self.playTicks/15)
+    self:refreshContainers()
     local audioOK,audioError=pcall(function()self:updateReplayAudio(self.playTime)end)
     if not audioOK then
         if self.audio then self.audio:close() end
         self.audioFailed=true;status('audio_error',tostring(audioError))
     end
     self:retireCorpses(self.playTime)
+    self:maintainRetiredResources()
     if not self.projectileFailed then
         local ok,err=pcall(function() self:updateProjectiles(subsystem:GetReplayCurrentTime()) end)
         if not ok then self.projectileFailed=true;status('projectile_visual_error',tostring(err)) end
@@ -778,15 +935,24 @@ function movementIO:play(subsystem)
     local candidates={}
     for _,actor in ipairs(self:cachedActors('TedPawn')) do
         if valid(actor) then
-            self:garrisonVisuals(actor)
             local actorName=actor:GetFullName()
+            if self.visualDeaths and self.visualDeaths[actorName] and self.garrisonMeshes and self.garrisonMeshes[actorName] then self:garrisonVisuals(actor) end
             if not (self.visualDeaths and self.visualDeaths[actorName]) then
+            self:garrisonVisuals(actor)
             self:presentationTick(actor)
-            self:watchDeath(actor)
+            self.watchedPawns=self.watchedPawns or {}
+            if not self.watchedPawns[actorName] then self:watchDeath(actor);self.watchedPawns[actorName]=true end
             local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
             if ok and dead then self:deathVisuals(actor,true) end
             local name=actor:GetFullName()
             if self:isPresentationPawn(actor) then
+                self.pawnKinds=self.pawnKinds or {}
+                local kind=self.pawnKinds[name]
+                if not kind then
+                    kind={class=actor:GetClass():GetFName():ToString(),unit=actor:IsA('/Script/Tempest.TedUnitBase'),
+                        structure=actor:IsA('/Script/Tempest.TedStructureBase'),site=actor:IsA('/Script/Tempest.TedConstructionSite')}
+                    self.pawnKinds[name]=kind -- UObject class traits cannot change during this actor's lifetime.
+                end
                 self.births[name]=self.births[name] or time
                 -- Unbound actors can initially have an unreplicated spawn pose.
                 -- Refresh that pose until matched; never remap a bound actor.
@@ -795,7 +961,7 @@ function movementIO:play(subsystem)
                     self.origins[name]={X=p.X,Y=p.Y,Z=p.Z}
                 end
                 candidates[#candidates+1]={name=name,actor=actor,position=self.origins[name],
-                    class=actor:GetClass():GetFName():ToString(),owner=actor:GetOwningPlayerID(),born=self.births[name],eligible=not self:isDead(actor)}
+                    class=kind.class,kind=kind,owner=actor:GetOwningPlayerID(),born=self.births[name],eligible=not self:isDead(actor)}
             end
         end
     end
@@ -806,13 +972,14 @@ function movementIO:play(subsystem)
     self.managed=self.managed or {}
     for key,sample in pairs(samples) do
         local actor=actors[key]
+        local kind=matched[key] and matched[key].kind
         if actor then
             self:deathVisuals(actor,sample.dead or sample.building==3)
             if sample.dead or sample.building==3 then self.finishedTracks[key]=true end
         end
-        if actor then self:buildingVisuals(actor,sample.building) end
-        if actor and self:isGarrisoned(actor) then actor:SetActorHiddenInGame(true) end
-        if actor and not self:isDead(actor) and not self:isGarrisoned(actor) and self:siteVisuals(actor,key,sample,time) then
+        if actor and (not kind or kind.structure) then self:buildingVisuals(actor,sample.building) end
+        if actor and self:isGarrisoned(actor) then self:garrisonVisuals(actor) end
+        if actor and not self:isDead(actor) and not self:isGarrisoned(actor) and (kind and not kind.site or self:siteVisuals(actor,key,sample,time)) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if actor:IsInContainer() then containerCorrections=containerCorrections+1 end
             if not self.visible or not self.visible[name] then
@@ -822,7 +989,7 @@ function movementIO:play(subsystem)
             actor:SetActorHiddenInGame(false)
             actor:K2_SetActorLocation(sample.position,false,{},true)
             actor:K2_SetActorRotation(sample.rotation,true)
-            if actor:IsA('/Script/Tempest.TedUnitBase') then
+            if (kind and kind.unit) or (not kind and actor:IsA('/Script/Tempest.TedUnitBase')) then
                 -- Native animation reads UnitMovement.Velocity. Teleporting the
                 -- actor alone leaves it zero and produces frozen-pose sliding.
                 local movement=actor:GetMovementComponent()
@@ -851,8 +1018,9 @@ function movementIO:play(subsystem)
         self.proofTime=time
         write(home..'playback-state.txt',session..'\ntime='..time..'\napplied='..applied..'\nstale_container_overrides='..containerCorrections..'\nretired_projectiles='..(self.retiredProjectileCount or 0)..'\nretired_corpses='..(self.retiredCorpses or 0))
     end
-    if not self.markerFailed and (not self.markerTime or time-self.markerTime>=0.1) then
-        self.markerTime=time
+    local markerNow=os.clock()
+    if not self.markerFailed and (not self.markerTime or markerNow-self.markerTime>=0.1) then
+        self.markerTime=markerNow -- UI redraw cadence is real time, including 4x playback.
         local ok,err=pcall(function() self:updateMarkers(actors,samples) end)
         if not ok then self.markerFailed=true;status('minimap_marker_error',tostring(err)) end
     end
@@ -865,41 +1033,54 @@ function movementIO:updateMarkers(actors,samples)
     local imageClass=StaticFindObject('/Script/UMG.Image')
     if not valid(utils) or not valid(ui) or not valid(imageClass) then return end
     self.maps=self.maps or {}
+    self.markerStates=self.markerStates or {}
+    local colors={}
     for _,widget in ipairs(FindAllOf('TedMinimapWidget') or {}) do
         if valid(widget) and valid(widget.MinimapImage) then
             local canvas=widget.MinimapImage:GetParent()
             if valid(canvas) and canvas:IsA('/Script/UMG.CanvasPanel') then
                 local name=widget:GetFullName();local pins=self.maps[name] or {};self.maps[name]=pins
+                local states=self.markerStates[name] or {};self.markerStates[name]=states
                 local bounds=utils:GetWorldBounds(widget);local size=widget:GetMinimapSize();local seen={}
                 local origin=widget.MinimapImage.Slot:GetPosition()
+                local signature=table.concat({size.X,size.Y,origin.X,origin.Y},':') -- world bounds are fixed for this replay map
                 for key,actor in pairs(actors) do
                     local sample=samples[key]
                     if sample and not actor:IsAlive() and not self:isDead(actor) and not self:isGarrisoned(actor) and not (self.absent and self.absent[actor:GetFullName()]) then
                         seen[key]=true
                         local pin=pins[key]
+                        local state=states[key]
                         if not valid(pin) then
                             pin=StaticConstructObject(imageClass,widget)
                             assert(valid(pin),'Minimap image allocation failed')
                             canvas:AddChildToCanvas(pin);pin:SetVisibility(3) -- HitTestInvisible: clicks pass through
                             pins[key]=pin
+                            state={};states[key]=state
+                            local width=actor:IsA('/Script/Tempest.TedStructureBase') and 5 or 3
+                            state.width=width;pin.Slot:SetSize({X=width,Y=width});pin.Slot:SetZOrder(10)
                         end
                         local owner=actor:GetOwningPlayerID()
-                        local color={R=0.65,G=0.65,B=0.65,A=1}
-                        if owner>=0 and owner<8 then
-                            local preset=utils:GetPlayerColorPreset(widget,owner)
-                            if preset then color=preset.PrimaryColor end
+                        if state.owner~=owner then
+                            local color=colors[owner]
+                            if not color then
+                                color={R=0.65,G=0.65,B=0.65,A=1}
+                                if owner>=0 and owner<8 then local preset=utils:GetPlayerColorPreset(widget,owner);if preset then color=preset.PrimaryColor end end
+                                colors[owner]=color
+                            end
+                            pin:SetColorAndOpacity(color);state.owner=owner
                         end
-                        pin:SetColorAndOpacity(color)
-                        local result={X=0,Y=0}
-                        ui:CalculateMinimapLocation(bounds,{X=sample.position.X,Y=sample.position.Y},size,result)
-                        local width=actor:IsA('/Script/Tempest.TedStructureBase') and 5 or 3
-                        pin.Slot:SetSize({X=width,Y=width})
-                        pin.Slot:SetPosition({X=origin.X+result.X-width/2,Y=origin.Y+result.Y-width/2})
-                        pin.Slot:SetZOrder(10)
+                        -- Stationary buildings do not need material/Slate writes
+                        -- on every pass. Still re-project on geometry changes.
+                        if state.x~=sample.position.X or state.y~=sample.position.Y or state.geometry~=signature then
+                            local result={X=0,Y=0}
+                            ui:CalculateMinimapLocation(bounds,{X=sample.position.X,Y=sample.position.Y},size,result)
+                            pin.Slot:SetPosition({X=origin.X+result.X-state.width/2,Y=origin.Y+result.Y-state.width/2})
+                            state.x=sample.position.X;state.y=sample.position.Y;state.geometry=signature
+                        end
                     end
                 end
                 for key,pin in pairs(pins) do
-                    if not seen[key] then if valid(pin) then pin:RemoveFromParent() end;pins[key]=nil end
+                    if not seen[key] then if valid(pin) then pin:RemoveFromParent() end;pins[key]=nil;states[key]=nil end
                 end
             end
         end
@@ -912,6 +1093,7 @@ function movementIO:fail(err)
 end
 function movementIO:alive(actor)
     if self:isDead(actor) then return false end
+    if self:isGarrisoned(actor) then return false end
     local name=actor:GetFullName()
     if self.absent and self.absent[name] then return false end
     return (self.visible and self.visible[name]) or actor:IsAlive()
@@ -1230,8 +1412,13 @@ local function finishReplay(pc)
     if viewerFinished then return end
     viewerFinished=true;followTarget=nil
     if movementIO.audio then movementIO.audio:close() end
+    movementIO:maintainRetiredResources(#(movementIO.retiredResources or {}))
     local settings=pc:GetWorld():K2_GetWorldSettings()
     if not valid(settings.PauserPlayerState) then command(pc,'demopause') end
+    gameLoop(100,function()
+        if not viewerStopped then movementIO:maintainRetiredResources(#(movementIO.retiredResources or {})) end
+        return true -- catch presentation restarts queued by the last demo frame
+    end)
     local ok,err=pcall(function()
         liveWidgets('TedThirdPartySpectatorHud',function(hud)
             if not hud:IsInViewport() then return end
@@ -1402,7 +1589,8 @@ if mode == 'play' then
                 if not valid(subsystem) or not subsystem:IsPlaying() then followTarget=nil; return end
                 local movementOK,movementError=pcall(function() movementIO:play(subsystem) end)
                 if not movementOK then movementIO:fail(movementError) end
-                local pc = getLocalPlayerController()
+                local pc = movementIO.audioController
+                if not valid(pc) then pc=getLocalPlayerController() end
                 if not valid(pc) or not valid(pc.Pawn) then followTarget=nil; return end
                 local down = pc:IsInputKeyDown({KeyName=FName('LeftMouseButton')})
                 if down and not mouseWasDown then followTarget = nil end
