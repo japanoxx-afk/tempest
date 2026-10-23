@@ -1426,7 +1426,7 @@ local function finishReplay(pc)
             if not valid(canvas) or not canvas:IsA('/Script/UMG.CanvasPanel') then return end
             local label=StaticConstructObject(StaticFindObject('/Script/UMG.TextBlock'),hud)
             canvas:AddChildToCanvas(label)
-            label:SetText(FText('리플레이 종료 · 기록된 마지막 시점입니다'))
+            label:SetText(FText('리플레이 종료 · 3초 후 게임이 종료됩니다'))
             label:SetColorAndOpacity({SpecifiedColor={R=1,G=1,B=1,A=1},ColorUseRule=0})
             local font=label.Font;font.Size=24;label:SetFont(font)
             label:SetVisibility(3)
@@ -1435,7 +1435,18 @@ local function finishReplay(pc)
             label.Slot:SetAutoSize(true);label.Slot:SetPosition({X=0,Y=0});label.Slot:SetZOrder(100)
         end)
     end)
-    status('viewer_finished','리플레이 종료 · 저장된 마지막 시점. 승패 정보가 없는 파일에서는 결과를 추정하지 않습니다.'..(ok and '' or ' / banner: '..tostring(err)))
+    status('viewer_finished','리플레이 종료 · 3초 후 재생용 게임을 종료합니다. 새 경기는 런처의 게임 실행을 사용하세요.'..(ok and '' or ' / banner: '..tostring(err)))
+    -- Real-time callback: demo pause/speed must not delay the terminal exit.
+    gameLoop(3000,function()
+        if not viewerStopped then
+            stopViewer('Replay completed; closing the replay-only game process')
+            write(home..'shutdown.txt',session)
+            -- The session-bound watcher also closes this exact process if the
+            -- engine cannot service exit while its demo world is paused.
+            if valid(pc) then pcall(command,pc,'exit') end
+        end
+        return true
+    end)
 end
 local function configureViewer(pc)
     movementIO.audioController=pc

@@ -415,6 +415,21 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(self.commands().count('demopause'),1)
         self.assertIn('viewer_finished',(self.data/'status.txt').read_text(encoding='utf-8'))
 
+    def test_replay_eof_closes_only_replay_session_after_banner(self):
+        self.setup_viewer()
+        self.start('play',replay='TestReplay')
+        self.bridge.codec.duration=self.lua.eval('function() return 10 end')
+        self.lua.execute('replayPlaying=true;replayTime=9;replaySystem.GetReplayCurrentTime=function() return replayTime end')
+        self.tick();self.tick()
+        self.lua.execute('replayTime=10')
+        self.tick()
+        self.assertNotIn('exit',self.commands())
+        self.assertFalse((self.data/'close-viewer.txt').exists())
+        self.lua.execute('assert(loops[3000]());assert(loops[3000]())')
+        self.assertEqual(self.commands().count('exit'),1)
+        self.assertTrue((self.data/'close-viewer.txt').exists())
+        self.assertTrue((self.data/'shutdown.txt').exists())
+
     def test_locomotion_hook_changes_only_prepared_infantry_and_resets_when_inactive(self):
         self.setup_input();self.setup_online_companion()
         self.lua.execute("""
