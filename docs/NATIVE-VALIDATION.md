@@ -290,3 +290,5 @@ See PERFORMANCE-VALIDATION.md for category evidence, paired measurements and lim
 The final full 4x session 18fe6a4a986f4075b02ae3004e4f8570 reached 814.637 seconds. Audit of 248 pawns past their original retirement grace found zero visible owned components, zero unpaused owned Niagara systems and zero playing owned audio components. Supplementary impact audio was closed with zero owned/pending components. No new crash folder appeared. Per-frame resource maintenance is capped at 16 entries; invalid objects and ownership changes are dropped. Rendering/audio components are controlled only for replay-retired pawns, preserving actor/net GUIDs.
 
 On this PC/camera at 3840x2160, the paired late 4x window averaged 22.11 FPS before and 25.84 FPS after. This is an indicative single comparison, not a guarantee or evidence that all late-game load is gone. Python regression cases: 138 passing; PowerShell library/updater/native-guard/UI/exit checks also passed. New online matches, all maps and hours of repeated playback are not claimed verified.
+## v0.3.22
+최신 첨부 파일의 사망 표시·잔해·성능 검증은 [별도 기록](DEATH-PRESENTATION-VALIDATION.md)에 있습니다. 전체 항공기 파괴 검증 완료를 의미하지 않습니다.

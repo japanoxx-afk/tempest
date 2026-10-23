@@ -725,7 +725,7 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute('''
         collision=true;hidden=false;ticking=true;deaths=0
         local a={IsValid=function()return true end,GetFullName=function()return 'Sentinel' end,
-          DestroyActorDelay=3,ReceiveOnDeath=function()deaths=deaths+1 end,
+          IsA=function()return false end,DestroyActorDelay=3,ReceiveOnDeath=function()deaths=deaths+1 end,
           SetActorEnableCollision=function(self,v)collision=v end,
           SetActorHiddenInGame=function(self,v)hidden=v end,
           SetActorTickEnabled=function(self,v)ticking=v end,
@@ -1112,12 +1112,67 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute("""
         deaths=0
         for _,name in ipairs({'Pillager','Aircraft','FlameTurret'}) do
-          local a={PawnDeath={bDied=true},GetFullName=function() return name end,
+          local a={PawnDeath={bDied=true},GetFullName=function() return name end,IsA=function()return false end,
             SetActorEnableCollision=function() end,SetActorTickEnabled=function() end,ReceiveOnDeath=function() deaths=deaths+1 end}
           bridge:deathVisuals(a,true);bridge:deathVisuals(a,true)
         end
         assert(deaths==3)
         """)
+
+    def test_wreck_fallback_waits_for_native_delivery_and_preserves_configured_grace(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        local function vehicle(name)
+          return {IsValid=function()return true end,GetFullName=function()return name end,
+            IsA=function(self,c)return c=='/Script/Tempest.TedVehicle' end,WreckMesh={IsValid=function()return true end},DestroyActorDelay=90,
+            ReceiveOnDeath=function()end,SetActorEnableCollision=function()end,SetActorTickEnabled=function()end,
+            SpawnWreck=function(self)self.wrecks=(self.wrecks or 0)+1 end}
+        end
+        local tank=vehicle('Tank');local air=vehicle('Air');local native=vehicle('Native');local drone=vehicle('Drone');drone.WreckMesh=nil
+        local old=FindAllOf;FindAllOf=function(c)if c=='TedVehicleWreckActor'then return {{IsValid=function()return true end,GetOwner=function()return native end}}end;return old(c)end
+        bridge.playTime=10;bridge:deathVisuals(tank,true);bridge:deathVisuals(air,true);bridge:deathVisuals(native,true);bridge:deathVisuals(drone,true)
+        assert(bridge.corpseQueue.Tank.untilTime==100)
+        bridge:restoreWrecks(10.05);assert(tank.wrecks==nil)
+        bridge.wreckPresented={Air=true} -- observed native SpawnWreck in the same frame
+        bridge:restoreWrecks(10.11);bridge:restoreWrecks(20);bridge:deathVisuals(tank,true)
+        assert(tank.wrecks==1 and air.wrecks==nil and native.wrecks==nil and drone.wrecks==nil and next(bridge.pendingWrecks)==nil)
+        assert(tank.bDisableHUDBars and tank.bDisableStatusEffects and not tank.bCanEverBeSelected)
+        ''')
+
+    def test_native_wreck_observer_ignores_released_playback_state(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        local previous=StaticFindObject
+        StaticFindObject=function(path)if path=='/Script/Tempest.TedVehicle:SpawnWreck'then return consoleFunction end;return previous(path)end
+        local cls={GetFullName=function()return 'Class Test' end,ForEachFunction=function()end}
+        local actor={IsValid=function()return true end,GetFullName=function()return 'Tank' end,GetClass=function()return cls end}
+        bridge:watchDeath(actor)
+        local hook=hooks['/Script/Tempest.TedVehicle:SpawnWreck'];assert(hook)
+        hook({get=function()return actor end});assert(bridge.wreckPresented.Tank)
+        bridge:close();hook({get=function()return actor end});assert(bridge.wreckPresented==nil)
+        ''')
+
+    def test_dead_status_recycles_only_current_dead_owner_and_status_tags(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute('''
+        local function pawn(n)return {IsValid=function()return true end,GetFullName=function()return n end}end
+        local dead=pawn('dead');local living=pawn('living')
+        local function cue(owner,tag)
+          return {owner=owner,IsValid=function()return true end,GetOwner=function(self)return self.owner end,
+            GameplayCueTag={TagName={ToString=function()return tag end}},
+            K2_EndGameplayCue=function(self)self.ends=(self.ends or 0)+1;self.owner=living end}
+        end
+        local status=cue(dead,'GameplayCue.RepMinimal.Status.Marked.Infantry')
+        local explosion=cue(dead,'GameplayCue.Death.Explosion')
+        local pooled=cue(living,'GameplayCue.RepMinimal.Status.Marked.Infantry')
+        bridge.cachedActors=function(self,c)if c=='TedPawn'then return {dead,living}else return {status,explosion,pooled}end end
+        bridge.visualDeaths={dead=true};bridge.deadPresentationActors={dead=dead,expired={IsValid=function()return false end}};bridge.cacheTick=1
+        bridge:retireDeadStatus();bridge:retireDeadStatus()
+        bridge.cacheTick=2;bridge:retireDeadStatus()
+        assert(status.ends==1 and explosion.ends==nil and pooled.ends==nil)
+        assert(dead.bDisableHUDBars and living.bDisableHUDBars==nil)
+        assert(bridge.deadPresentationActors.expired==nil)
+        ''')
 
     def test_recorded_death_survives_actor_removal_before_next_snapshot(self):
         self.setup_online_companion();self.start()

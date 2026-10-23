@@ -197,6 +197,7 @@ end
 function movementIO:close()
     if self.audio then self.audio:close();self.audio=nil end
     self.audioController=nil
+    self.pendingWrecks=nil;self.wreckPresented=nil;self.deadStatusEpoch=nil;self.deadPresentationActors=nil
     self.animationFrames={}
     self.retiredResources=nil;self.retiredResourceKeys=nil;self.retiredResourceCursor=nil;self.projectiles=nil;self.projectileActors=nil;self.projectileTime=nil;self.doctrineApplied=nil
     self.actorCache=nil;self.finishedTracks=nil;self.contained=nil;self.containerEpoch=nil;self.watchedPawns=nil;self.pawnKinds=nil;self.deadFrame=nil;self.markerStates=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
@@ -332,6 +333,14 @@ function movementIO:record(subsystem,name,actors)
 end
 function movementIO:watchDeath(actor)
     self.deathHooks=self.deathHooks or {};self.deathPresented=self.deathPresented or {}
+    if mode=='play' and not self.wreckHook and valid(StaticFindObject('/Script/Tempest.TedVehicle:SpawnWreck')) then
+        self.wreckHook=true;self.wreckPresented=self.wreckPresented or {}
+        RegisterHook('/Script/Tempest.TedVehicle:SpawnWreck',function(context)
+            if viewerStopped or travelling or not self.wreckPresented then return end
+            local pawn=context:get()
+            if valid(pawn) then self.wreckPresented[pawn:GetFullName()]=true end
+        end)
+    end
     local function install(path)
         if self.deathHooks[path] then return end
         self.deathHooks[path]=true
@@ -353,6 +362,61 @@ function movementIO:watchDeath(actor)
             install(cls:GetFullName():gsub('^BlueprintGeneratedClass ',''):gsub('^Class ','')..':ReceiveOnDeath')
         end
     end)
+end
+function movementIO:retireDeadStatus()
+    if mode~='play' or self.deadStatusEpoch==self.cacheTick then return end
+    self.deadStatusEpoch=self.cacheTick
+    if not self.visualDeaths or not next(self.visualDeaths) then return end
+    for name,actor in pairs(self.deadPresentationActors or {}) do
+        if not valid(actor) then self.deadPresentationActors[name]=nil
+        else
+            -- Presentation policy only. Never remove gameplay effects/abilities.
+            actor.bDisableHUDBars=true;actor.bDisableStatusEffects=true
+            actor.bCanEverBeSelected=false
+            local decal=member(actor,'SelectionDecal')
+            if valid(decal) then decal:SetHiddenInGame(true,false);decal:SetVisibility(false,false) end
+        end
+    end
+    for _,cue in ipairs(self:cachedActors('GameplayCueNotify_Actor')) do
+        if valid(cue) then
+            -- Resolve current ownership every time: cues can be pooled and
+            -- transferred to living targets. Never retain a quarantine for them.
+            local owner=cue:GetOwner()
+            if valid(owner) and self.visualDeaths[owner:GetFullName()] then
+                local tag=cue.GameplayCueTag.TagName:ToString()
+                if tag:find('.Status.',1,true) then
+                    cue:K2_EndGameplayCue() -- native recycle path cancels effects/timers
+                end
+            end
+        end
+    end
+end
+function movementIO:restoreWrecks(time)
+    if mode~='play' then return end
+    local existing
+    for name,entry in pairs(self.pendingWrecks or {}) do
+        if time>=entry.at then
+            self.pendingWrecks[name]=nil
+            if valid(entry.actor) and not (self.wreckPresented and self.wreckPresented[name]) then
+                -- Direct native C++ calls can bypass a reflected function hook.
+                -- Respect already spawned wrecks with an explicit pawn owner;
+                -- do not guess ownership from distance in crowded battles.
+                if not existing then
+                    existing={}
+                    for _,wreck in ipairs(FindAllOf('TedVehicleWreckActor') or {}) do
+                        if valid(wreck) then
+                            local owner=wreck:GetOwner()
+                            if valid(owner) then existing[owner:GetFullName()]=true end
+                        end
+                    end
+                end
+                self.wreckPresented=self.wreckPresented or {};self.wreckPresented[name]=true
+                -- Dedicated cosmetic native function. Do not invoke Die,
+                -- OnRep_PawnDeath, NetMulticast_Died, damage or attack paths.
+                if not existing[name] then entry.actor:SpawnWreck() end
+            end
+        end
+    end
 end
 -- Replay-only caches expire independently of the demo clock (which can pause).
 function movementIO:cachedActors(className)
@@ -624,12 +688,18 @@ function movementIO:deathVisuals(actor,dead)
         actor:ReceiveOnDeath()
     end
     if not self.visualDeaths[name] then
+        self.deadPresentationActors=self.deadPresentationActors or {};self.deadPresentationActors[name]=actor
         self.corpseQueue=self.corpseQueue or {}
         local delay=member(actor,'DestroyActorDelay')
         if type(delay)~='number' or delay<=0 then delay=8 end
-        delay=math.max(2,math.min(30,delay))
         local clock=self.playTime or 0
         self.corpseQueue[name]={actor=actor,untilTime=clock+delay}
+        if actor:IsA('/Script/Tempest.TedVehicle') and valid(member(actor,'WreckMesh')) then
+            self.pendingWrecks=self.pendingWrecks or {}
+            -- Allow native death delivery in the current frame to spawn first.
+            self.pendingWrecks[name]={actor=actor,at=clock+0.1}
+        end
+        actor.bDisableHUDBars=true;actor.bDisableStatusEffects=true;actor.bCanEverBeSelected=false
         -- Dead presentation actors must not intercept selection or minimap hits.
         actor:SetActorEnableCollision(false)
         local neutral=self.neutralMeshes and self.neutralMeshes[name]
@@ -903,6 +973,8 @@ function movementIO:play(subsystem)
         self.audioFailed=true;status('audio_error',tostring(audioError))
     end
     self:retireCorpses(self.playTime)
+    self:restoreWrecks(self.playTime)
+    self:retireDeadStatus()
     self:maintainRetiredResources()
     if not self.projectileFailed then
         local ok,err=pcall(function() self:updateProjectiles(subsystem:GetReplayCurrentTime()) end)
