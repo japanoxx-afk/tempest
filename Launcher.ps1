@@ -29,6 +29,7 @@ $ui = @{}
 @('Language','Help','GameLabel','ReplayLabel','LibraryLabel','AutoHint','LimitHint','SpeedLabel','Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Export','Open','Play','Status','InstallBridge','RemoveBridge','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $script:english=@{
  'GitHub에서 최신 버전을 확인합니다…'='Checking GitHub for the latest version…';'다운로드 중…'='Downloading…';'다운로드 검증 및 압축 해제 중…'='Verifying download and extracting…'
+ '새 런처 버전이 있습니다.'='A new launcher version is available.';'GitHub에서 최신 버전을 확인합니다…'='Checking the latest version on GitHub…'
  '이미 최신 버전입니다.'='The launcher is up to date.';'검증 완료. 런처를 닫고 업데이트를 설치합니다…'='Verified. Closing launcher to install the update…';'업데이트 설치 중…'='Installing update…'
  '업데이트 설치 완료. 런처를 다시 실행합니다.'='Update installed. Restarting launcher.';'업데이트 SHA256 검증에 실패했습니다.'='Update SHA256 verification failed.';'릴리스의 배포 파일 또는 체크섬이 없습니다.'='Release package or checksum is missing.'
  '리플레이 안전 검사 실패 · 게임 빌드와 진단 로그 확인 필요'='Replay safety check failed; check game build and logs'
@@ -320,6 +321,16 @@ $ui.ApplySpeed.Add_Click({
 })
 $script:updateProcess=$null
 $script:updateStatusFile=$null
+$script:updateBusy=$false
+$script:updateDiscovery=$false
+function Confirm-LauncherUpdate([string]$LatestVersion) {
+ $message=if($settings.language -eq 'en'){
+  "A new launcher version is available: v$LatestVersion (installed: v$version).`nDownload and install it now?"
+ }else{
+  "새 런처 버전 v$LatestVersion 이 있습니다. (현재 v$version)`n지금 다운로드하고 업데이트하시겠습니까?"
+ }
+ return [Windows.MessageBox]::Show($window,$message,(Get-LocalizedText '런처 업데이트'),[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information,[Windows.MessageBoxResult]::No) -eq [Windows.MessageBoxResult]::Yes
+}
 $updateTimer=New-Object Windows.Threading.DispatcherTimer
 $updateTimer.Interval=[TimeSpan]::FromMilliseconds(500)
 $updateTimer.Add_Tick({
@@ -328,34 +339,49 @@ $updateTimer.Add_Tick({
    $progress=[IO.File]::ReadAllText($script:updateStatusFile,[Text.Encoding]::UTF8) | ConvertFrom-Json
    $ui.Status.Text=Get-LocalizedText $progress.message
    $ui.Update.Content=Get-LocalizedText $progress.message
+   if($script:updateDiscovery -and $progress.state -in @('available','current','error')){
+    $updateTimer.Stop();$script:updateBusy=$false
+    $ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
+    if($progress.state -eq 'available' -and (Confirm-LauncherUpdate $progress.version)){Start-LauncherUpdate}
+    return
+   }
    if($progress.state -eq 'ready'){$updateTimer.Stop();$window.Close();return}
    if($progress.state -in @('current','error')){
-    $updateTimer.Stop();$ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
+    $updateTimer.Stop();$script:updateBusy=$false;$ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
     [Windows.MessageBox]::Show($window,(Get-LocalizedText $progress.message),(Get-LocalizedText '런처 업데이트')) | Out-Null
     return
    }
   }
   if($script:updateProcess.HasExited){throw "업데이트 작업이 중단되었습니다. 로그: $script:updateStatusFile.log"}
  } catch {
-  $updateTimer.Stop();$ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
+  $updateTimer.Stop();$script:updateBusy=$false;$ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
   $ui.Status.Text=Get-LocalizedText $_.Exception.Message
-  [Windows.MessageBox]::Show($window,(Get-LocalizedText $_.Exception.Message),(Get-LocalizedText '런처 업데이트 오류')) | Out-Null
+  if(-not $script:updateDiscovery){[Windows.MessageBox]::Show($window,(Get-LocalizedText $_.Exception.Message),(Get-LocalizedText '런처 업데이트 오류')) | Out-Null}
  }
 })
-$ui.Update.Add_Click({
+function Start-LauncherUpdate([bool]$Discover=$false) {
+ if($script:updateBusy){return}
  try {
+  $script:updateBusy=$true;$script:updateDiscovery=$Discover
   $ui.Update.IsEnabled=$false;$ui.Update.Content=(Get-LocalizedText '최신 버전 확인 중…');$ui.Status.Text=(Get-LocalizedText '업데이트를 확인합니다…')
   $requestFolder=Join-Path $data ('updates\'+[guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $requestFolder -Force | Out-Null
   $script:updateStatusFile=Join-Path $requestFolder 'status.json'
   # A separate process keeps all network and archive work off the WPF UI thread.
   $worker=Join-Path $root 'Update.ps1'
-  $script:updateProcess=Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),'-Check','-Target',('"'+$root+'"'),'-CurrentVersion',$version,'-StatusPath',('"'+$script:updateStatusFile+'"'),'-WaitPid',$PID)
+  $operation=if($Discover){'-Discover'}else{'-Check'}
+  $script:updateProcess=Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$worker+'"'),$operation,'-Target',('"'+$root+'"'),'-CurrentVersion',$version,'-StatusPath',('"'+$script:updateStatusFile+'"'),'-WaitPid',$PID)
   $updateTimer.Start()
  } catch {
-  $ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트');Show-Error $_
-  [Windows.MessageBox]::Show($window,(Get-LocalizedText $_.Exception.Message),(Get-LocalizedText '런처 업데이트 오류')) | Out-Null
+  $script:updateBusy=$false;$ui.Update.IsEnabled=$true;$ui.Update.Content=(Get-LocalizedText '런처 업데이트')
+  if(-not $Discover){Show-Error $_}
  }
+}
+$ui.Update.Add_Click({Start-LauncherUpdate})
+$script:startupCheckStarted=$false
+$window.Add_ContentRendered({
+ if(-not $script:startupCheckStarted){$script:startupCheckStarted=$true;Start-LauncherUpdate $true}
 })
+$window.Add_Closed({$updateTimer.Stop()})
 try { Refresh-Replays } catch { Show-Error $_ }
 $window.ShowDialog() | Out-Null

@@ -60,6 +60,7 @@ $launcherPath=Join-Path (Split-Path $PSScriptRoot -Parent) 'Launcher.ps1'
 $tokens=$null;$parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($launcherPath,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count){throw ($parseErrors | Out-String)}
+foreach($fn in $ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Start-LauncherUpdate'},$true)){. ([scriptblock]::Create($fn.Extent.Text))}
 $click=$ast.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Expression.Extent.Text -eq '$ui.Update' -and $n.Member.Value -eq 'Add_Click'},$true) | Select-Object -First 1
 $tick=$ast.FindAll({param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Expression.Extent.Text -eq '$updateTimer' -and $n.Member.Value -eq 'Add_Tick'},$true) | Select-Object -First 1
 $ui=@{Update=[pscustomobject]@{IsEnabled=$true;Content='Update'};Status=[pscustomobject]@{Text=''}}
@@ -68,7 +69,8 @@ $data=$testRoot;$root=$target;$version='1.0.0'
 $window=[pscustomobject]@{Closed=$false};$window | Add-Member ScriptMethod Close {$this.Closed=$true}
 $updateTimer=[pscustomobject]@{Running=$false};$updateTimer | Add-Member ScriptMethod Start {$this.Running=$true};$updateTimer | Add-Member ScriptMethod Stop {$this.Running=$false}
 function Start-Process {param($FilePath,$WindowStyle,[switch]$PassThru,$ArgumentList)
- if($FilePath -ne 'powershell.exe' -or $WindowStyle -ne 'Hidden' -or '-Check' -notin $ArgumentList -or -not $PassThru){throw 'Updater worker not dispatched in background'}
+ if($FilePath -ne 'powershell.exe' -or $WindowStyle -ne 'Hidden' -or ('-Check' -notin $ArgumentList -and '-Discover' -notin $ArgumentList) -or -not $PassThru){throw 'Updater worker not dispatched in background'}
+ $script:workerCalls++;$script:lastWorkerArguments=$ArgumentList
  return [pscustomobject]@{HasExited=$false}
 }
 & $click.Arguments[0].ScriptBlock.GetScriptBlock()
@@ -86,3 +88,45 @@ Write-UpdateState 'ready' 'Ready'
 & $tick.Arguments[0].ScriptBlock.GetScriptBlock()
 if(-not $window.Closed -or $updateTimer.Running){throw 'Verified updater did not close launcher for replacement'}
 'PASS: update button dispatches a worker, reports progress and closes only when verified'
+
+# Discovery only checks metadata; it must never download or install.
+function Invoke-WebRequest {throw 'Discovery must not download release files'}
+Find-LauncherUpdate '1.0.0'
+$discovery=[IO.File]::ReadAllText($StatusPath) | ConvertFrom-Json
+if($discovery.state -ne 'available' -or $discovery.version -ne '9.0.0'){throw 'New release not discovered'}
+Find-LauncherUpdate '9.0.0'
+if(([IO.File]::ReadAllText($StatusPath) | ConvertFrom-Json).state -ne 'current'){throw 'Current version offered again'}
+Find-LauncherUpdate '10.0.0'
+if(([IO.File]::ReadAllText($StatusPath) | ConvertFrom-Json).state -ne 'current'){throw 'Downgrade offered'}
+$script:updateBusy=$false;$script:workerCalls=0;$window.Closed=$false
+$script:promptCalls=0;$script:acceptUpdate=$false
+function Confirm-LauncherUpdate([string]$LatestVersion){
+ if($LatestVersion -ne '9.0.0'){throw 'Prompt missing available version'}
+ $script:promptCalls++;return $script:acceptUpdate
+}
+Start-LauncherUpdate $true
+if('-Discover' -notin $script:lastWorkerArguments -or -not $updateTimer.Running){throw 'Startup check blocks or downloads'}
+Start-LauncherUpdate
+if($script:workerCalls -ne 1){throw 'Concurrent update worker started'}
+$StatusPath=$script:updateStatusFile
+Write-UpdateState 'available' 'New release' '9.0.0'
+& $tick.Arguments[0].ScriptBlock.GetScriptBlock()
+if($script:promptCalls -ne 1 -or $script:workerCalls -ne 1 -or $window.Closed -or $updateTimer.Running -or -not $ui.Update.IsEnabled){throw 'Declined update changed launcher or downloaded'}
+$script:acceptUpdate=$true
+Start-LauncherUpdate $true
+$StatusPath=$script:updateStatusFile
+Write-UpdateState 'available' 'New release' '9.0.0'
+& $tick.Arguments[0].ScriptBlock.GetScriptBlock()
+if($script:promptCalls -ne 2 -or '-Check' -notin $script:lastWorkerArguments -or -not $updateTimer.Running -or $window.Closed){throw 'Accepted update not dispatched for verification'}
+$script:updateBusy=$false
+Start-LauncherUpdate $true
+$StatusPath=$script:updateStatusFile
+Write-UpdateState 'error' 'Offline'
+& $tick.Arguments[0].ScriptBlock.GetScriptBlock()
+if($script:promptCalls -ne 2 -or $window.Closed -or $updateTimer.Running -or -not $ui.Update.IsEnabled){throw 'Offline startup blocks launcher'}
+Start-LauncherUpdate $true
+$StatusPath=$script:updateStatusFile
+Write-UpdateState 'current' 'Current'
+& $tick.Arguments[0].ScriptBlock.GetScriptBlock()
+if($script:promptCalls -ne 2 -or $window.Closed -or $updateTimer.Running){throw 'Up-to-date startup prompted'}
+'PASS: background startup discovery, current/newer/offline cases, decline, accept, and duplicate worker prevention'

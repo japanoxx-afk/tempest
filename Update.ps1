@@ -1,10 +1,10 @@
-﻿param([string]$Target,[string]$Source,[int]$WaitPid,[string]$CurrentVersion,[string]$StatusPath,[switch]$Check,[switch]$NoRestart,[switch]$LibraryOnly)
+﻿param([string]$Target,[string]$Source,[int]$WaitPid,[string]$CurrentVersion,[string]$StatusPath,[switch]$Check,[switch]$Discover,[switch]$NoRestart,[switch]$LibraryOnly)
 $ErrorActionPreference='Stop'
-function Write-UpdateState([string]$State,[string]$Message) {
+function Write-UpdateState([string]$State,[string]$Message,[string]$LatestVersion='') {
  if(-not $StatusPath){return}
  $statusDirectory=Split-Path $StatusPath -Parent
  New-Item -ItemType Directory -Path $statusDirectory -Force | Out-Null
- $json=@{state=$State;message=$Message;time=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
+ $json=@{state=$State;message=$Message;version=$LatestVersion;time=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
  # PS 5.1 Get-Content defaults to ANSI without a BOM. Keep old launchers compatible.
  [IO.File]::WriteAllText($StatusPath+'.tmp',$json,(New-Object Text.UTF8Encoding($true)))
  if([IO.File]::Exists($StatusPath)){[IO.File]::Replace($StatusPath+'.tmp',$StatusPath,[NullString]::Value)}
@@ -55,10 +55,20 @@ function Install-LauncherUpdate([string]$Package,[string]$Destination,[string]$B
   throw
  }
 }
-function Receive-LauncherUpdate([string]$Stage,[string]$InstalledVersion) {
+function Get-LauncherRelease {
  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+ return Invoke-RestMethod 'https://api.github.com/repos/japanoxx-afk/tempest/releases/latest' -Headers @{'User-Agent'='TempestReplayLauncher'} -TimeoutSec 20
+}
+function Find-LauncherUpdate([string]$InstalledVersion) {
  Write-UpdateState 'checking' 'GitHub에서 최신 버전을 확인합니다…'
- $release=Invoke-RestMethod 'https://api.github.com/repos/japanoxx-afk/tempest/releases/latest' -Headers @{'User-Agent'='TempestReplayLauncher'} -TimeoutSec 20
+ $release=Get-LauncherRelease
+ $latest=[version]($release.tag_name -replace '^v','')
+ if($latest -gt [version]$InstalledVersion){Write-UpdateState 'available' '새 런처 버전이 있습니다.' $latest.ToString()}
+ else {Write-UpdateState 'current' '이미 최신 버전입니다.'}
+}
+function Receive-LauncherUpdate([string]$Stage,[string]$InstalledVersion) {
+ Write-UpdateState 'checking' 'GitHub에서 최신 버전을 확인합니다…'
+ $release=Get-LauncherRelease
  $latest=[version]($release.tag_name -replace '^v','')
  if($latest -le [version]$InstalledVersion){return $null}
  $zip=@($release.assets | Where-Object name -eq 'TempestReplayLauncher.zip')
@@ -83,6 +93,7 @@ if($LibraryOnly){return}
 $installStarted=$false
 try {
  if(-not $Target){throw '설치 폴더가 지정되지 않았습니다.'}
+ if($Discover){Find-LauncherUpdate $CurrentVersion;return}
  if($Check){
   $Source=Receive-LauncherUpdate (Join-Path (Split-Path $StatusPath -Parent) 'download') $CurrentVersion
   if(-not $Source){Write-UpdateState 'current' '이미 최신 버전입니다.';return}
@@ -100,6 +111,6 @@ try {
 } catch {
  $failure="업데이트 실패: $($_.Exception.Message)"
  Write-UpdateState 'error' $failure
- if(-not $Check -or $installStarted){Add-Type -AssemblyName PresentationFramework;[Windows.MessageBox]::Show($failure,'런처 업데이트') | Out-Null}
+ if((-not $Check -and -not $Discover) -or $installStarted){Add-Type -AssemblyName PresentationFramework;[Windows.MessageBox]::Show($failure,'런처 업데이트') | Out-Null}
  exit 1
 }
