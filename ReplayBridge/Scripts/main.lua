@@ -199,6 +199,9 @@ function movementIO:close()
     self.audioController=nil
     self.pendingWrecks=nil;self.wreckPresented=nil;self.deadStatusEpoch=nil;self.deadPresentationActors=nil
     self.animationFrames={}
+    self.garrisonFrame=nil;self.appliedPoses=nil;self.locomotionCache=nil;self.nativeHealthCache=nil
+    self.healthPanel=nil;self.healthBars=nil;self.healthFailed=nil;self.healthHidden=nil;self.healthOffsets=nil
+    self.candidates=nil;self.candidateFrame=nil;self.candidateEpoch=nil;self.catalogClasses=nil
     self.retiredResources=nil;self.retiredResourceKeys=nil;self.retiredResourceCursor=nil;self.projectiles=nil;self.projectileActors=nil;self.projectileTime=nil;self.doctrineApplied=nil
     self.actorCache=nil;self.finishedTracks=nil;self.contained=nil;self.containerEpoch=nil;self.watchedPawns=nil;self.pawnKinds=nil;self.deadFrame=nil;self.markerStates=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
     self.viewerDoctrinePopup=nil
@@ -224,16 +227,31 @@ function movementIO:resetMarkers()
     self.markerTime=nil
 end
 function movementIO:updateLocomotion(actor,velocity)
-    local mesh=actor.MeshComp
+    local name=actor:GetFullName()
+    self.locomotionCache=self.locomotionCache or {}
+    local cached=self.locomotionCache[name]
+    if not cached or cached.epoch~=self.cacheTick or not valid(cached.mesh) or (cached.anim and not valid(cached.anim)) then
+        local mesh=actor.MeshComp
+        cached={epoch=self.cacheTick,mesh=mesh};self.locomotionCache[name]=cached
+        if valid(mesh) then
+            local anim=mesh:GetAnimInstance()
+            if valid(anim) and anim:IsA('/Script/Tempest.TedAnimInstance_Infantry') then
+                local definition=actor:GetDefinitionAsset()
+                local speed=valid(definition) and definition.MovementSpeed
+                if type(speed)=='number' and speed>0 and speed<=10000 then
+                    cached.anim=anim;cached.maxSpeed=speed;cached.animName=anim:GetFullName()
+                    anim.bUseMultiThreadedAnimationUpdate=false
+                    mesh.bEnableUpdateRateOptimizations=false
+                end
+            end
+        end
+    end
+    local mesh=cached.mesh
     if not valid(mesh) then return end
     self:presentationTick(actor)
     mesh:SetComponentTickEnabled(true)
-    local anim=mesh:GetAnimInstance()
-    if not valid(anim) or not anim:IsA('/Script/Tempest.TedAnimInstance_Infantry') then return end
-    local definition=actor:GetDefinitionAsset()
-    if not valid(definition) then return end
-    local maxSpeed=definition.MovementSpeed
-    if type(maxSpeed)~='number' or maxSpeed<=0 or maxSpeed>10000 then return end
+    local anim=cached.anim
+    if not valid(anim) then return end
     if not self.animationHook then
         local path='/Game/Tempest/Blueprints/Animation/ABP_InfantryBase.ABP_InfantryBase_C:BlueprintThreadSafeUpdateAnimation'
         RegisterHook(path,function(context)
@@ -248,9 +266,7 @@ function movementIO:updateLocomotion(actor,velocity)
         end)
         self.animationHook=true
     end
-    anim.bUseMultiThreadedAnimationUpdate=false
-    mesh.bEnableUpdateRateOptimizations=false
-    self.animationFrames[anim:GetFullName()]={speed=math.sqrt(velocity.X^2+velocity.Y^2),maxSpeed=maxSpeed}
+    self.animationFrames[cached.animName]={speed=math.sqrt(velocity.X^2+velocity.Y^2),maxSpeed=cached.maxSpeed}
 end
 function movementIO:record(subsystem,name,actors)
     if not self.codec or self.failed then return end
@@ -273,6 +289,12 @@ function movementIO:record(subsystem,name,actors)
                 -- Cached building poses must not retain native struct wrappers.
                 local unit={class=class,owner=owner,entity=entity,
                     position={X=p.X,Y=p.Y,Z=p.Z},rotation={Pitch=r.Pitch,Yaw=r.Yaw,Roll=r.Roll}}
+                -- Read received attributes only. Never change health/replication
+                -- or reveal information the recording client did not receive.
+                local ok,hp,maximum=pcall(function()return actor:GetHealth(),actor:GetHealthMax()end)
+                if ok and type(hp)=='number' and type(maximum)=='number' and hp==hp and maximum==maximum and maximum>0 and maximum<1e9 and hp>=0 and hp<=maximum then
+                    unit.health={current=hp,maximum=maximum}
+                end
                 if structure then
                     unit.building=constructing and 1 or 2
                     self.recordedBuildings[actor:GetFullName()]=unit
@@ -575,14 +597,18 @@ function movementIO:neutralColor(actor,component)
 end
 function movementIO:isGarrisoned(actor)
     if mode~='play' then return false end
-    if self.contained and self.contained[actor:GetFullName()] then return true end
-    if not actor:IsInContainer() then return false end
-    local ok,owner=pcall(function() return actor:GetPawnContainerOwner() end)
-    if not ok then return false end
+    local name=actor:GetFullName()
+    if self.garrisonFrame and self.garrisonFrame[name]~=nil then return self.garrisonFrame[name] end
+    local contained=self.contained and self.contained[name]~=nil or false
+    if not contained and actor:IsInContainer() then
+        local ok,owner=pcall(function() return actor:GetPawnContainerOwner() end)
+        contained=ok and valid(owner) and (owner:IsA('/Script/Tempest.TedConformationBase') or owner:IsA('/Script/Tempest.TedUnitBase')) or false
+    end
     -- Production buildings can retain a stale container flag in client demos.
     -- A real bunker/transport owner is different: never pull its occupant out
     -- to a companion pose or make it visible to the spectator/minimap.
-    return valid(owner) and (owner:IsA('/Script/Tempest.TedConformationBase') or owner:IsA('/Script/Tempest.TedUnitBase'))
+    if self.garrisonFrame then self.garrisonFrame[name]=contained end
+    return contained
 end
 function movementIO:refreshContainers()
     if mode~='play' or self.containerEpoch==self.cacheTick then return end
@@ -602,7 +628,7 @@ function movementIO:refreshContainers()
     end
     if not self.containerHook and valid(StaticFindObject('/Script/Tempest.TedPawnContainerComponent:OnRep_PawnsInContainer')) then
         self.containerHook=true
-        RegisterHook('/Script/Tempest.TedPawnContainerComponent:OnRep_PawnsInContainer',function()self.containerEpoch=nil end)
+        RegisterHook('/Script/Tempest.TedPawnContainerComponent:OnRep_PawnsInContainer',function()self.containerEpoch=nil;self.garrisonFrame={};self.candidateEpoch=nil end)
     end
 end
 function movementIO:garrisonVisuals(actor)
@@ -959,9 +985,110 @@ function movementIO:updateReplayAudio(time)
         write(home..'audio-state.txt',session..'\ntime='..time..'\nplayed='..s.played..'\nnative_duplicates='..s.native..'\nmissing='..s.missing..'\nqueued='..s.queued..'\nno_tag='..s.noTag..'\nno_cue='..s.noCue..'\nspawn_failed='..s.spawnFailed..'\nlast_missing_tag='..tostring(self.audio.lastMissingTag)..'\nlast_spawn_error='..tostring(self.audio.lastSpawnError)..'\ndropped='..s.dropped..'\nactive='..#self.audio.owned..'\npaused='..tostring(paused))
     end
 end
+function movementIO:updateHealthBars(actors,samples)
+    if mode~='play' then return end
+    if self.healthHidden then actors={} end
+    local pc=self.audioController
+    if not valid(pc) then return end
+    local panel=self.healthPanel
+    if not valid(panel) then
+        for _,hud in ipairs(self:cachedActors('TedThirdPartySpectatorHud')) do
+            if valid(hud) and hud:IsInViewport() then
+                local parent=hud.VerticalBox_Minimap
+                for _=1,12 do
+                    if not valid(parent) then break end
+                    if parent:IsA('/Script/UMG.CanvasPanel') then panel=parent end
+                    parent=parent:GetParent()
+                end
+                if valid(panel) then self.healthPanel=panel;self.healthBars={} end
+                break
+            end
+        end
+    end
+    if not valid(panel) then return end
+    local layout=StaticFindObject('/Script/UMG.Default__WidgetLayoutLibrary')
+    local cls=StaticFindObject('/Script/UMG.ProgressBar')
+    if not valid(layout) or not valid(cls) then return end
+    self.healthBars=self.healthBars or {}
+    local seen={};local sx,sy={},{};pc:GetViewportSize(sx,sy)
+    local scale=layout:GetViewportScale(pc)
+    local width,height=(sx.SizeX or 0)/scale,(sy.SizeY or 0)/scale
+    for key,actor in pairs(actors) do
+        local sample=samples[key]
+        local hp=sample and sample.health
+        -- Legacy client demos may have no attribute set. Unknown is not full
+        -- health; never synthesize a percentage or write native attributes.
+        if not hp then
+            self.nativeHealthCache=self.nativeHealthCache or {}
+            local cached=self.nativeHealthCache[key]
+            if not cached or cached.epoch~=self.cacheTick then
+                cached={epoch=self.cacheTick};self.nativeHealthCache[key]=cached
+                if valid(member(actor,'DefaultAttributeSet')) then
+                    local current,maximum=actor:GetHealth(),actor:GetHealthMax()
+                    if maximum>0 and current>=0 and current<=maximum then cached.health={current=current,maximum=maximum} end
+                end
+            end
+            hp=cached.health
+        end
+        if hp and hp.maximum>0 and hp.current>0 and sample and not sample.dead and sample.building~=3 and not self:isDead(actor) and not self:isGarrisoned(actor) and self.visible[actor:GetFullName()] then
+            local p=sample.position
+            self.healthOffsets=self.healthOffsets or {}
+            local offset=self.healthOffsets[key]
+            if not offset or offset.building~=sample.building then
+                offset={building=sample.building,z=sample.building and 300 or 140}
+                local ok,top=pcall(function()
+                    local origin,extent={},{};actor:GetActorBounds(false,origin,extent,false)
+                    return origin.Z+extent.Z-p.Z+40
+                end)
+                if ok and top>0 and top<5000 then offset.z=top end
+                self.healthOffsets[key]=offset
+            end
+            local position={X=p.X,Y=p.Y,Z=p.Z+offset.z}
+            local screen={}
+            if layout:ProjectWorldLocationToWidgetPosition(pc,position,screen,true) and screen.X>=0 and screen.X<=width and screen.Y>=0 and screen.Y<=height then
+                local bar=self.healthBars[key]
+                if not valid(bar) then
+                    bar=StaticConstructObject(cls,panel);panel:AddChildToCanvas(bar)
+                    bar.Slot:SetSize({X=sample.building and 72 or 48,Y=5});bar.Slot:SetAlignment({X=0.5,Y=1});bar.Slot:SetZOrder(-1)
+                    self.healthBars[key]=bar
+                end
+                local pct=hp.current/hp.maximum
+                bar:SetPercent(pct);bar:SetFillColorAndOpacity(pct>0.5 and {R=0.1,G=0.8,B=0.1,A=1} or (pct>0.25 and {R=1,G=0.7,B=0,A=1} or {R=1,G=0.1,B=0.1,A=1}))
+                bar.Slot:SetPosition({X=screen.X,Y=screen.Y});bar:SetVisibility(3)
+                -- The demo's native bar can report zero or duplicate this one.
+                -- Suppress it only after a known-health replacement is visible.
+                if not actor.bDisableHUDBars then actor.bDisableHUDBars=true end
+                seen[key]=true
+            end
+        end
+    end
+    for key,bar in pairs(self.healthBars) do
+        if not seen[key] then
+            if valid(bar) then bar:RemoveFromParent() end
+            self.healthBars[key]=nil
+        end
+    end
+end
+function movementIO:applyPose(actor,name,sample)
+    -- Moving poses still update every playback callback. Stationary buildings
+    -- and idle units need no repeated teleport/rotation/render invalidation.
+    -- A cache epoch refresh repairs any native demo transform overwrite.
+    self.appliedPoses=self.appliedPoses or {}
+    local previous=self.appliedPoses[name]
+    local p,r=sample.position,sample.rotation
+    local refresh=not previous or previous.epoch~=self.cacheTick
+    if refresh or previous.x~=p.X or previous.y~=p.Y or previous.z~=p.Z then
+        actor:K2_SetActorLocation(p,false,{},true)
+    end
+    if refresh or previous.pitch~=r.Pitch or previous.yaw~=r.Yaw or previous.roll~=r.Roll then
+        actor:K2_SetActorRotation(r,true)
+    end
+    self.appliedPoses[name]={x=p.X,y=p.Y,z=p.Z,pitch=r.Pitch,yaw=r.Yaw,roll=r.Roll,epoch=self.cacheTick}
+end
 function movementIO:play(subsystem)
     self.animationFrames={}
     self.deadFrame={}
+    self.garrisonFrame={}
     if mode~='play' or not valid(subsystem) or not subsystem:IsPlaying() then return end
     self.playTime=subsystem:GetReplayCurrentTime()
     self.playTicks=(self.playTicks or 0)+1
@@ -985,6 +1112,8 @@ function movementIO:play(subsystem)
         self.opened=true
         local path=os.getenv('LOCALAPPDATA')..'/Tempest/Saved/Demos/'..replay..'.movement'
         self.catalog=self.codec.catalog(path,replay)
+        self.catalogClasses={}
+        for _,track in pairs(self.catalog) do self.catalogClasses[track.class]=true end
         self.reader=self.codec.reader(path,replay)
         if self.reader then status('movement_playback','Applying received unit transforms from '..replay..'.movement')
         else status('movement_missing','No movement companion; using native replay data only') end
@@ -1004,7 +1133,13 @@ function movementIO:play(subsystem)
         self.visible={};self.absent={};self.applied=0;return
     end
     self.origins=self.origins or {};self.bindings=self.bindings or {};self.births=self.births or {}
-    local candidates={}
+    local candidates=self.candidates
+    -- Identity discovery/binding inputs change at recorded snapshot boundaries.
+    -- Keep per-render interpolation below, but do not rebuild the entire native
+    -- pawn census multiple times for the same data frame. Container replication
+    -- invalidates its epoch independently of the recorded clock.
+    if not candidates or self.candidateFrame~=self.reader.previous or self.candidateEpoch~=self.cacheTick or self.candidateContainerEpoch~=self.containerEpoch then
+    candidates={}
     for _,actor in ipairs(self:cachedActors('TedPawn')) do
         if valid(actor) then
             local actorName=actor:GetFullName()
@@ -1014,8 +1149,7 @@ function movementIO:play(subsystem)
             self:presentationTick(actor)
             self.watchedPawns=self.watchedPawns or {}
             if not self.watchedPawns[actorName] then self:watchDeath(actor);self.watchedPawns[actorName]=true end
-            local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
-            if ok and dead then self:deathVisuals(actor,true) end
+            if self:isDead(actor) then self:deathVisuals(actor,true) end
             local name=actor:GetFullName()
             if self:isPresentationPawn(actor) then
                 self.pawnKinds=self.pawnKinds or {}
@@ -1025,6 +1159,7 @@ function movementIO:play(subsystem)
                         structure=actor:IsA('/Script/Tempest.TedStructureBase'),site=actor:IsA('/Script/Tempest.TedConstructionSite')}
                     self.pawnKinds[name]=kind -- UObject class traits cannot change during this actor's lifetime.
                 end
+                if not self.catalogClasses or self.catalogClasses[kind.class] then
                 self.births[name]=self.births[name] or time
                 -- Unbound actors can initially have an unreplicated spawn pose.
                 -- Refresh that pose until matched; never remap a bound actor.
@@ -1034,10 +1169,26 @@ function movementIO:play(subsystem)
                 end
                 candidates[#candidates+1]={name=name,actor=actor,position=self.origins[name],
                     class=kind.class,kind=kind,owner=actor:GetOwningPlayerID(),born=self.births[name],eligible=not self:isDead(actor)}
+                end
             end
         end
     end
     end
+    self.candidates=candidates;self.candidateFrame=self.reader.previous;self.candidateEpoch=self.cacheTick;self.candidateContainerEpoch=self.containerEpoch
+    end
+    for _,entry in pairs(self.garrisonMeshes or {}) do
+        if valid(entry.actor) then self:garrisonVisuals(entry.actor) end
+    end
+    -- Actors can disappear between snapshots. Never pass stale native objects
+    -- to binding or transform application, even while the demo is paused.
+    local current={}
+    for _,candidate in ipairs(candidates) do
+        if valid(candidate.actor) then
+            candidate.eligible=not self:isDead(candidate.actor)
+            current[#current+1]=candidate
+        end
+    end
+    candidates=current
     local matched=self.codec.match(self.reader.tracks,samples,candidates,self.bindings)
     for key,candidate in pairs(matched) do actors[key]=candidate.actor end
     local applied,visible,absent,containerCorrections=0,{},{},0
@@ -1046,21 +1197,20 @@ function movementIO:play(subsystem)
         local actor=actors[key]
         local kind=matched[key] and matched[key].kind
         if actor then
-            self:deathVisuals(actor,sample.dead or sample.building==3)
+            self:deathVisuals(actor,sample.dead or sample.building==3 or self:isDead(actor))
             if sample.dead or sample.building==3 then self.finishedTracks[key]=true end
         end
         if actor and (not kind or kind.structure) then self:buildingVisuals(actor,sample.building) end
-        if actor and self:isGarrisoned(actor) then self:garrisonVisuals(actor) end
         if actor and not self:isDead(actor) and not self:isGarrisoned(actor) and (kind and not kind.site or self:siteVisuals(actor,key,sample,time)) then
             local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
             if actor:IsInContainer() then containerCorrections=containerCorrections+1 end
             if not self.visible or not self.visible[name] then
+                if self.appliedPoses then self.appliedPoses[name]=nil end
                 actor:K2_SetDefaultVisibility(true,true)
                 actor:K2_OnVisibilityChanged(true)
             end
-            actor:SetActorHiddenInGame(false)
-            actor:K2_SetActorLocation(sample.position,false,{},true)
-            actor:K2_SetActorRotation(sample.rotation,true)
+            if actor.bHidden then actor:SetActorHiddenInGame(false) end
+            self:applyPose(actor,name,sample)
             if (kind and kind.unit) or (not kind and actor:IsA('/Script/Tempest.TedUnitBase')) then
                 -- Native animation reads UnitMovement.Velocity. Teleporting the
                 -- actor alone leaves it zero and produces frozen-pose sliding.
@@ -1086,6 +1236,10 @@ function movementIO:play(subsystem)
     self.visible=visible
     self.absent=absent
     self.applied=applied
+    if not self.healthFailed then
+        local ok,err=pcall(function()self:updateHealthBars(actors,samples)end)
+        if not ok then self.healthFailed=true;status('health_display_error',tostring(err)) end
+    end
     if not self.proofTime or time-self.proofTime>=1 then
         self.proofTime=time
         write(home..'playback-state.txt',session..'\ntime='..time..'\napplied='..applied..'\nstale_container_overrides='..containerCorrections..'\nretired_projectiles='..(self.retiredProjectileCount or 0)..'\nretired_corpses='..(self.retiredCorpses or 0))
@@ -1622,6 +1776,7 @@ if mode == 'play' then
             end
         end)
         hudHidden=not hudHidden
+        movementIO.healthHidden=hudHidden
         -- Panel callbacks can invalidate the replay visibility channels even
         -- while the HUD is hidden; the world itself must remain visible.
         movementIO.visible={}

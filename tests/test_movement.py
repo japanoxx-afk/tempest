@@ -28,6 +28,26 @@ class MovementTests(unittest.TestCase):
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
 
+    def test_health_is_recorded_discretely_without_future_damage_or_healing(self):
+        self.lua.execute("""
+        w=M.writer(path,'Test');local u=unit(0);u.health={current=100,maximum=100};w:frame(0,{u})
+        u.health={current=40,maximum=100};w:frame(1,{u})
+        u.health={current=70,maximum=120};w:frame(2,{u});w:close()
+        r=M.reader(path,'Test')
+        assert(r:at(0.9)['Tank_C:1:2076'].health.current==100)
+        assert(r:at(1)['Tank_C:1:2076'].health.current==40)
+        local hp=r:at(2)['Tank_C:1:2076'].health
+        assert(hp.current==70 and hp.maximum==120)
+        """)
+
+    def test_legacy_health_is_unknown_and_invalid_health_is_rejected(self):
+        self.path.write_text('TEMPEST_MOVEMENT\t4\tTest\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t0\t0\t0\t0\t0\nE\n')
+        self.lua.execute("r=M.reader(path,'Test');assert(r:at(0)['Tank_C:1:2076'].health==nil);r:close()")
+        for current, maximum in [('10','0'), ('-1','100'), ('101','100'), ('nan','100')]:
+            self.path.write_text('TEMPEST_MOVEMENT\t5\tTest\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t0\t0\t0\t0\t0\t0\nH\t1\t'+current+'\t'+maximum+'\nE\n')
+            with self.assertRaises(LuaError): self.lua.execute("r=M.reader(path,'Test');r:at(0)")
+            self.lua.execute('r:close()')
+
     def test_one_shot_death_is_delivered_when_fast_playback_skips_its_frame(self):
         self.lua.execute('''
         w=M.writer(path,'Test');w:frame(0,{unit(0,0)})

@@ -40,7 +40,7 @@ end
 function M.writer(path,name)
     assert(token(name),'Invalid replay name')
     local f=assert(io.open(path,'wb'))
-    assert(f:write('TEMPEST_MOVEMENT\t4\t'..name..'\n'));assert(f:flush())
+    assert(f:write('TEMPEST_MOVEMENT\t5\t'..name..'\n'));assert(f:flush())
     local w={file=f,ids={},count=0,frames=0,last=-1}
     function w:frame(time,units,doctrines)
         assert(finite(time) and time>=0 and time>=self.last,'Movement clock went backwards')
@@ -73,6 +73,10 @@ function M.writer(path,name)
                 rows[#rows+1]=string.format('B\t%d\t%d\n',id,u.building)
             end
             if u.dead then rows[#rows+1]='D\t'..id..'\n' end
+            if u.health then
+                assert(finite(u.health.current) and finite(u.health.maximum) and u.health.maximum>0 and u.health.current>=0 and u.health.current<=u.health.maximum,'Invalid health sample')
+                rows[#rows+1]=string.format('H\t%d\t%.3f\t%.3f\n',id,u.health.current,u.health.maximum)
+            end
             if u.site then
                 assert(finite(u.site.footprint) and u.site.footprint%1==0 and u.site.footprint>=0 and u.site.footprint<256 and finite(u.site.progress) and u.site.progress>=0 and u.site.progress<=1,'Invalid construction site')
                 rows[#rows+1]=string.format('C\t%d\t%d\t%.6f\n',id,u.site.footprint,u.site.progress)
@@ -92,7 +96,7 @@ function M.reader(path,name)
     local f=io.open(path,'rb');if not f then return nil end
     local header=(f:read('*l') or ''):gsub('\r$','')
     local version
-    for i=1,4 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
+    for i=1,5 do if header=='TEMPEST_MOVEMENT\t'..i..'\t'..name then version=i end end
     if not version then f:close();error('Movement companion header/name mismatch') end
     local r={file=f,definitions={},identities={},tracks={},deaths={},deliveredDeaths={},last=-1,frames=0}
     function r:close() if self.file then self.file:close();self.file=nil end end
@@ -109,11 +113,11 @@ function M.reader(path,name)
                 self.last=t;self.frames=self.frames+1;frame={time=t,units={},count=0,doctrines={}}
             elseif a[1]=='S' then
                 local owner=tonumber(a[2])
-                assert(version==4 and frame and #a==2 and finite(owner) and owner%1==0 and owner>=0 and owner<256 and not frame.doctrines[owner],'Invalid doctrine player record')
+                assert(version>=4 and frame and #a==2 and finite(owner) and owner%1==0 and owner>=0 and owner<256 and not frame.doctrines[owner],'Invalid doctrine player record')
                 frame.doctrines[owner]={}
             elseif a[1]=='R' then
                 local owner=tonumber(a[2]);local assets=frame and frame.doctrines[owner]
-                assert(version==4 and #a==3 and assets and #assets<64 and M.assetPath(a[3]),'Invalid doctrine asset record')
+                assert(version>=4 and #a==3 and assets and #assets<64 and M.assetPath(a[3]),'Invalid doctrine asset record')
                 for _,path in ipairs(assets) do assert(path~=a[3],'Duplicate doctrine asset') end
                 assets[#assets+1]=a[3]
             elseif a[1]=='U' then
@@ -127,6 +131,11 @@ function M.reader(path,name)
                 frame.count=frame.count+1;assert(frame.count<=20000,'Too many movement samples')
                 frame.units[key]={position={X=v[3],Y=v[4],Z=v[5]},rotation={Pitch=v[6],Yaw=v[7],Roll=v[8]}}
                 if not self.tracks[key].position then self.tracks[key].position=frame.units[key].position;self.tracks[key].time=frame.time end
+            elseif a[1]=='H' then
+                local key=self.definitions[tonumber(a[2])];local unit=frame and key and frame.units[key]
+                local current,maximum=tonumber(a[3]),tonumber(a[4])
+                assert(version>=5 and #a==4 and unit and not unit.health and finite(current) and finite(maximum) and maximum>0 and current>=0 and current<=maximum,'Invalid health record')
+                unit.health={current=current,maximum=maximum}
             elseif a[1]=='B' then
                 local id,state=tonumber(a[2]),tonumber(a[3]);local key=id and self.definitions[id]
                 local unit=frame and key and frame.units[key]
@@ -163,9 +172,9 @@ function M.reader(path,name)
             if v then
                 local p,q=u.position,v.position;local x,y=u.rotation,v.rotation
                 result[key]={position={X=blend(p.X,q.X,alpha),Y=blend(p.Y,q.Y,alpha),Z=blend(p.Z,q.Z,alpha)},
-                    building=u.building,dead=u.dead,site=u.site,velocity=M.velocity(p,q,b.time-a.time),
+                    building=u.building,dead=u.dead,site=u.site,health=u.health,velocity=M.velocity(p,q,b.time-a.time),
                     rotation={Pitch=angle(x.Pitch,y.Pitch,alpha),Yaw=angle(x.Yaw,y.Yaw,alpha),Roll=angle(x.Roll,y.Roll,alpha)}}
-            else result[key]={position=u.position,rotation=u.rotation,building=u.building,dead=u.dead,site=u.site,velocity={X=0,Y=0,Z=0}} end
+            else result[key]={position=u.position,rotation=u.rotation,building=u.building,dead=u.dead,site=u.site,health=u.health,velocity={X=0,Y=0,Z=0}} end
         end
         -- A fast playback frame can cross the one-shot death sample. Deliver
         -- every reached tombstone once even if its frame was skipped entirely.

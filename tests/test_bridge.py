@@ -92,6 +92,65 @@ class BridgeTests(unittest.TestCase):
         self.lua.execute(SOURCE)
         self.assertIsNone(self.lua.globals().loop)
 
+    def test_stationary_poses_skip_redundant_writes_but_motion_and_epoch_repair_apply(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local moves,turns=0,0
+        local a={K2_SetActorLocation=function()moves=moves+1 end,K2_SetActorRotation=function()turns=turns+1 end}
+        local s={position={X=1,Y=2,Z=3},rotation={Pitch=0,Yaw=0,Roll=0}}
+        bridge.cacheTick=0;bridge:applyPose(a,'a',s);bridge:applyPose(a,'a',s)
+        assert(moves==1 and turns==1)
+        s.position.X=2;bridge:applyPose(a,'a',s);assert(moves==2 and turns==1)
+        s.rotation.Yaw=90;bridge:applyPose(a,'a',s);assert(moves==2 and turns==2)
+        bridge.cacheTick=1;bridge:applyPose(a,'a',s);assert(moves==3 and turns==3)
+        """)
+
+    def test_garrison_lookup_cache_is_scoped_to_one_playback_frame(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local calls,inside=0,true
+        local owner={IsValid=function()return true end,IsA=function()return true end}
+        local a={GetFullName=function()return 'a' end,IsInContainer=function()calls=calls+1;return inside end,GetPawnContainerOwner=function()return owner end}
+        bridge.garrisonFrame={};assert(bridge:isGarrisoned(a));assert(bridge:isGarrisoned(a));assert(calls==1)
+        inside=false;bridge.garrisonFrame={};assert(not bridge:isGarrisoned(a));assert(calls==2)
+        """)
+
+    def test_health_overlay_uses_recorded_values_and_removes_dead_or_contained_bars(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local yes=function()return true end
+        local panel={IsValid=yes,AddChildToCanvas=function()end}
+        local layout={IsValid=yes,GetViewportScale=function()return 1 end,
+          ProjectWorldLocationToWidgetPosition=function(self,pc,p,out)out.X=100;out.Y=100;return true end}
+        local original=StaticFindObject
+        StaticFindObject=function(path)
+          if path=='/Script/UMG.Default__WidgetLayoutLibrary' then return layout end
+          if path=='/Script/UMG.ProgressBar' then return {IsValid=yes} end
+          return original(path)
+        end
+        local removed=0
+        StaticConstructObject=function()
+          return {IsValid=yes,Slot={SetSize=function()end,SetAlignment=function()end,SetZOrder=function()end,SetPosition=function()end},
+            SetPercent=function(self,p)self.percent=p end,SetFillColorAndOpacity=function()end,SetVisibility=function()end,
+            RemoveFromParent=function()removed=removed+1 end}
+        end
+        pc.GetViewportSize=function(self,x,y)x.SizeX=1920;y.SizeY=1080 end
+        local dead,inside=false,false
+        bridge.isDead=function()return dead end;bridge.isGarrisoned=function()return inside end
+        bridge.audioController=pc;bridge.healthPanel=panel;bridge.visible={unit=true};bridge.cacheTick=1
+        local a={IsValid=yes,GetFullName=function()return 'unit' end,DefaultAttributeSet=invalid,
+          GetActorBounds=function(self,only,o,e)o.Z=100;e.Z=75 end}
+        local s={position={X=0,Y=0,Z=0}}
+        bridge:updateHealthBars({u=a},{u=s});assert(next(bridge.healthBars)==nil)
+        s.health={current=40,maximum=100};bridge:updateHealthBars({u=a},{u=s});assert(bridge.healthBars.u.percent==0.4)
+        assert(bridge.healthOffsets.u.z==215)
+        inside=true;bridge:updateHealthBars({u=a},{u=s});assert(removed==1 and next(bridge.healthBars)==nil)
+        inside=false;bridge:updateHealthBars({u=a},{u=s});dead=true;bridge:updateHealthBars({u=a},{u=s});assert(removed==2)
+        dead=false;bridge:updateHealthBars({u=a},{u=s});bridge.healthHidden=true
+        bridge:updateHealthBars({u=a},{u=s});assert(removed==3 and next(bridge.healthBars)==nil)
+        bridge.healthHidden=false;bridge:updateHealthBars({u=a},{u=s});assert(bridge.healthBars.u.percent==0.4)
+        """)
+
     def test_replay_requires_current_session_native_guard_before_demoplay(self):
         self.start('play',replay='TestReplay')
         for content in ['', 'other\nready\nGuard', 'session123\nerror\nUnsupported build']:
@@ -438,11 +497,17 @@ class BridgeTests(unittest.TestCase):
           GetFullName=function() return 'InfantryAnim' end,IsMovingSpeedThreshold=5}
         unit.MeshComp={IsValid=function() return true end,GetAnimInstance=function() return anim end,
           SetComponentTickEnabled=function(self,on)meshTick=on end}
-        unit.GetDefinitionAsset=function() return {IsValid=function() return true end,MovementSpeed=550} end
+        definitionReads=0
+        unit.GetDefinitionAsset=function() definitionReads=definitionReads+1;return {IsValid=function() return true end,MovementSpeed=550} end
         """)
         self.bridge.animationFrames=self.lua.table()
         self.bridge.updateLocomotion(self.bridge,self.lua.globals().unit,self.lua.eval('{X=550,Y=0,Z=0}'))
         self.lua.execute('assert(meshTick);anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==550);assert(anim.MaxSpeed==550);assert(anim.bIsMoving)')
+        self.bridge.updateLocomotion(self.bridge,self.lua.globals().unit,self.lua.eval('{X=300,Y=0,Z=0}'))
+        self.lua.execute('animHook({get=function() return anim end});assert(anim.Speed==300);assert(definitionReads==1)')
+        self.bridge.cacheTick=2
+        self.bridge.updateLocomotion(self.bridge,self.lua.globals().unit,self.lua.eval('{X=0,Y=0,Z=0}'))
+        self.lua.execute('animHook({get=function() return anim end});assert(anim.Speed==0 and not anim.bIsMoving);assert(definitionReads==2)')
         self.bridge.close(self.bridge)
         self.lua.execute('anim.Speed=100;animHook({get=function() return anim end});assert(anim.Speed==100)')
 
@@ -615,13 +680,24 @@ class BridgeTests(unittest.TestCase):
         path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nP\t1\t110\t20\t30\t0\t0\t0\nE\n')
         self.lua.execute('unit.IsInContainer=function() return true end;replayPlaying=true;loops[16]();assert(locationWrites==1)')
 
+    def test_pawn_census_reuses_same_snapshot_without_skipping_interpolation(self):
+        self.setup_input();self.setup_online_companion();self.lua.globals().bridge=self.bridge
+        path=self.root / 'Tempest/Saved/Demos/TestReplay.movement'
+        path.write_bytes(b'TEMPEST_MOVEMENT\t1\tTestReplay\nF\t0\nU\t1\tTank_C\t1\t2076\nP\t1\t10\t20\t30\t0\t0\t0\nF\t1\nP\t1\t110\t20\t30\t0\t0\t0\nE\n')
+        self.lua.execute("""
+        reads=0;unit.GetOwningPlayerID=function()reads=reads+1;return 1 end
+        replayPlaying=true;loops[16]();local first=reads
+        replayTime=0.01;loops[16]();assert(reads==first and locationWrites==2)
+        unit.IsValid=function()return false end;replayTime=0.02;loops[16]();assert(locationWrites==2)
+        """)
+
     def test_real_garrison_owner_is_not_a_stale_production_container(self):
         self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
         self.lua.execute("""
         local v=function()return true end
         local kind='/Script/Tempest.TedConformationBase'
         local owner={IsValid=v,IsA=function(self,c)return c==kind end}
-        local unit={IsValid=v,IsInContainer=function()return true end,GetPawnContainerOwner=function()return owner end}
+        local unit={IsValid=v,GetFullName=function()return 'unit' end,IsInContainer=function()return true end,GetPawnContainerOwner=function()return owner end}
         assert(bridge:isGarrisoned(unit))
         kind='/Script/Tempest.TedUnitBase';assert(bridge:isGarrisoned(unit))
         kind='/Script/Tempest.TedProductionStructure';assert(not bridge:isGarrisoned(unit))
@@ -995,6 +1071,17 @@ class BridgeTests(unittest.TestCase):
         self.assertIn('completed',(self.data / 'movement-state.txt').read_text())
         self.lua.execute('isRecording=false;loops[100]()')
         self.assertTrue(files[0].read_text().endswith('E\n'))
+
+    def test_online_health_capture_is_read_only_and_unknown_health_is_omitted(self):
+        self.setup_online_companion()
+        self.lua.execute("unit.GetHealth=function()return 35 end;unit.GetHealthMax=function()return 100 end;unit.SetHealth=function()error('must not write health')end")
+        self.start();self.tick();self.lua.execute('began=true');self.tick()
+        self.lua.execute('loops[100]();replayTime=0.1;unit.GetHealthMax=function()return 0 end;loops[100]()')
+        text=next((self.root / 'Tempest/Saved/Demos').glob('*.movement')).read_text()
+        self.assertEqual(text.count('H\t1\t35.000\t100.000'),1)
+        self.assertIsNone(self.lua.globals().locationWrites)
+        self.assertEqual(self.lua.globals().movementChanges,0)
+        self.lua.execute('ended=true');self.tick()
 
     def test_network_structure_presence_is_recorded_without_changing_replication(self):
         self.setup_online_companion()

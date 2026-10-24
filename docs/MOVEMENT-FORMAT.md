@@ -1,13 +1,14 @@
-# Movement companion v1/v2/v3/v4
+# Movement companion v1/v2/v3/v4/v5
 
 The companion is optional, local UTF-8/ASCII tab-separated data. It is not an Unreal replay and cannot be played independently. Store it beside the same-named `.replay` file. The generated replay basename binds the pair. Do not rename one file independently.
 
-- Header: `TEMPEST_MOVEMENT<TAB>4<TAB>basename` for new recordings; readers also accept v1/v2/v3.
+- Header: `TEMPEST_MOVEMENT<TAB>5<TAB>basename` for new recordings; readers also accept v1/v2/v3/v4.
 - `F<TAB>nativeReplaySeconds` begins a full snapshot. Times increase monotonically.
 - `U<TAB>localID<TAB>unitClass<TAB>ownerID<TAB>entityKey` defines an identity once.
 - `P<TAB>localID<TAB>X<TAB>Y<TAB>Z<TAB>Pitch<TAB>Yaw<TAB>Roll` records a received transform.
 - Optional v2 `B<TAB>localID<TAB>state` follows a P record: 1 production queue active, 2 queue idle, 3 explicitly dead. Earlier writers mislabeled IsConstructing as placement construction. It actually describes factory production; never trigger a placement montage when this queue becomes idle. States are discrete, never interpolated; each sample permits one state. Construction can precede native IsAlive. Death requires an observed native PawnDeath flag, never absence.
 - `E` finalizes the file. Completed, flushed frames remain usable if the process stopped without a trailer.
+- Optional v5 `H<TAB>localID<TAB>currentHealth<TAB>maximumHealth` follows the corresponding P. Only finite, nonnegative current health at most a positive maximum is accepted. Health is discrete at snapshot time, never interpolated toward future damage/healing. Absence means unknown. Recording reads the client's received values; playback displays them without creating attribute sets or calling health/damage setters. Old files cannot reconstruct missing health from positions, death flags or unit definitions.
 
 The native bridge reads the first IntProperty-sized word at NubECS.EcsActorComponent.EntityHandle through a read-only custom property alias resolved by reflection. This build exposes the handle as a native serialized struct with no reflected fields. The prefix is combined with class and owner to identify tracks within this recording; duplicate simultaneous identities are rejected. Native testing in v0.3.8 demonstrated that these handles are NOT stable between recording and playback. Playback ignores their numeric equality and binds tracks to a unique actor of the same class and owner within 200 Unreal units of its first recorded pose. Equal/competing candidates are rejected; established bindings persist instead of being recomputed from moving positions. Identical co-located spawns may remain unmatched.
 
@@ -17,7 +18,7 @@ Limits: 20,000 samples per snapshot, 1,000,000 unique IDs, finite coordinates bo
 
 The pure data codec and mocked online-client integration tests do not by themselves establish successful online gameplay recording. Consult NATIVE-VALIDATION.md for native test evidence and limitations.
 
-Client demos in the tested build restore zero health/max-health and IsAlive=false for actors that were actually alive. Snapshot presence is therefore the source of truth for supplemented actor visibility. Absence hides previously supplemented actors and suppresses the generic visibility initializer. This does not fabricate health or repair missing gameplay attributes; health bars, selection and other ECS-dependent UI may remain incomplete. Building presence is captured as well as mobile units.
+Client demos in the tested build restore zero health/max-health and IsAlive=false for actors that were actually alive. Snapshot presence is therefore the source of truth for supplemented actor visibility. Absence hides previously supplemented actors and suppresses the generic visibility initializer. This does not fabricate health or repair missing gameplay attributes. v5 adds a read-only health snapshot and presentation-only health bars; earlier files without valid native attributes still cannot supply accurate health. Selection and other ECS-dependent UI may remain incomplete. Building presence is captured as well as mobile units.
 
 v0.3.9 additionally derives presentation velocity from adjacent position samples, using replay-time seconds. This does not change the file format or writer. A last/unpaired sample has zero velocity; discontinuities exceeding 10,000 Unreal units per second are treated as teleports for animation only. Position playback remains unchanged. Minimap supplementation uses the same matched/present targets and native map projection, without fabricating health or recording new network data.
 
