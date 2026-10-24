@@ -29,7 +29,7 @@ $ui = @{}
 @('Language','Help','GameLabel','ReplayLabel','LibraryLabel','AutoHint','LimitHint','SpeedLabel','Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Export','Open','Play','Status','InstallBridge','RemoveBridge','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $script:english=@{
  'GitHub에서 최신 버전을 확인합니다…'='Checking GitHub for the latest version…';'다운로드 중…'='Downloading…';'다운로드 검증 및 압축 해제 중…'='Verifying download and extracting…'
- '새 런처 버전이 있습니다.'='A new launcher version is available.';'GitHub에서 최신 버전을 확인합니다…'='Checking the latest version on GitHub…'
+ '새 런처 버전이 있습니다.'='A new launcher version is available.'
  '이미 최신 버전입니다.'='The launcher is up to date.';'검증 완료. 런처를 닫고 업데이트를 설치합니다…'='Verified. Closing launcher to install the update…';'업데이트 설치 중…'='Installing update…'
  '업데이트 설치 완료. 런처를 다시 실행합니다.'='Update installed. Restarting launcher.';'업데이트 SHA256 검증에 실패했습니다.'='Update SHA256 verification failed.';'릴리스의 배포 파일 또는 체크섬이 없습니다.'='Release package or checksum is missing.'
  '리플레이 안전 검사 실패 · 게임 빌드와 진단 로그 확인 필요'='Replay safety check failed; check game build and logs'
