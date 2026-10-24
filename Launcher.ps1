@@ -325,7 +325,7 @@ $updateTimer.Interval=[TimeSpan]::FromMilliseconds(500)
 $updateTimer.Add_Tick({
  try {
   if(Test-Path -LiteralPath $script:updateStatusFile){
-   $progress=Get-Content -LiteralPath $script:updateStatusFile -Raw | ConvertFrom-Json
+   $progress=[IO.File]::ReadAllText($script:updateStatusFile,[Text.Encoding]::UTF8) | ConvertFrom-Json
    $ui.Status.Text=Get-LocalizedText $progress.message
    $ui.Update.Content=Get-LocalizedText $progress.message
    if($progress.state -eq 'ready'){$updateTimer.Stop();$window.Close();return}

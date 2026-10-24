@@ -5,7 +5,8 @@ function Write-UpdateState([string]$State,[string]$Message) {
  $statusDirectory=Split-Path $StatusPath -Parent
  New-Item -ItemType Directory -Path $statusDirectory -Force | Out-Null
  $json=@{state=$State;message=$Message;time=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress
- [IO.File]::WriteAllText($StatusPath+'.tmp',$json,(New-Object Text.UTF8Encoding($false)))
+ # PS 5.1 Get-Content defaults to ANSI without a BOM. Keep old launchers compatible.
+ [IO.File]::WriteAllText($StatusPath+'.tmp',$json,(New-Object Text.UTF8Encoding($true)))
  if([IO.File]::Exists($StatusPath)){[IO.File]::Replace($StatusPath+'.tmp',$StatusPath,[NullString]::Value)}
  else{[IO.File]::Move($StatusPath+'.tmp',$StatusPath)}
  Add-Content -LiteralPath ($StatusPath+'.log') -Value ($State+': '+$Message) -Encoding UTF8

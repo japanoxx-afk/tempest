@@ -1,4 +1,4 @@
-$ErrorActionPreference='Stop'
+﻿$ErrorActionPreference='Stop'
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'Update.ps1') -LibraryOnly
 $testRoot=Join-Path (Split-Path $PSScriptRoot -Parent) ('dist\update-test-'+[guid]::NewGuid().ToString('N'))
 $package=Join-Path $testRoot 'package';$target=Join-Path $testRoot 'target';$backup=Join-Path $testRoot 'backup'
@@ -19,6 +19,12 @@ if([IO.File]::ReadAllText((Join-Path $target 'user-setting.txt')) -ne 'preserve'
 $StatusPath=Join-Path $testRoot 'status.json'
 Write-UpdateState 'checking' 'Checking'
 if((Get-Content $StatusPath -Raw | ConvertFrom-Json).state -ne 'checking'){throw 'Progress missing'}
+Write-UpdateState 'verifying' '다운로드 검증 및 압축 해제 중…'
+$bytes=[IO.File]::ReadAllBytes($StatusPath)
+if($bytes[0] -ne 239 -or $bytes[1] -ne 187 -or $bytes[2] -ne 191){throw 'Status must include a UTF8 BOM for legacy PS 5.1 readers'}
+$legacy=Get-Content $StatusPath -Raw | ConvertFrom-Json
+if($legacy.message -cne '다운로드 검증 및 압축 해제 중…' -or $legacy.state -ne 'verifying'){throw 'Legacy reader corrupts Korean progress'}
+'PASS: Korean status JSON is readable by legacy Windows PowerShell 5.1'
 $archive=Join-Path $testRoot 'fixture.zip'
 Compress-Archive -Path (Join-Path $package '*') -DestinationPath $archive
 $script:fixtureZip=$archive
@@ -67,9 +73,14 @@ function Start-Process {param($FilePath,$WindowStyle,[switch]$PassThru,$Argument
 & $click.Arguments[0].ScriptBlock.GetScriptBlock()
 if($ui.Update.IsEnabled -or -not $updateTimer.Running){throw 'Update click did not return with polling active'}
 $StatusPath=$script:updateStatusFile
-Write-UpdateState 'downloading' 'Downloading'
+Write-UpdateState 'verifying' '다운로드 검증 및 압축 해제 중…'
 & $tick.Arguments[0].ScriptBlock.GetScriptBlock()
-if($window.Closed -or $ui.Status.Text -ne 'Downloading'){throw 'Launcher closed before verification completed'}
+if($window.Closed -or $ui.Status.Text -cne '다운로드 검증 및 압축 해제 중…'){throw 'Launcher closed or corrupted Korean verification progress'}
+# Read statuses emitted by already installed workers with BOM-less UTF8 too.
+$oldStatus='{"message":"다운로드 검증 및 압축 해제 중…","state":"verifying"}'
+[IO.File]::WriteAllText($StatusPath,$oldStatus,(New-Object Text.UTF8Encoding($false)))
+& $tick.Arguments[0].ScriptBlock.GetScriptBlock()
+if($window.Closed -or $ui.Status.Text -cne '다운로드 검증 및 압축 해제 중…'){throw 'BOM-less legacy worker status corrupted'}
 Write-UpdateState 'ready' 'Ready'
 & $tick.Arguments[0].ScriptBlock.GetScriptBlock()
 if(-not $window.Closed -or $updateTimer.Running){throw 'Verified updater did not close launcher for replacement'}
