@@ -3,7 +3,7 @@ $source=Join-Path (Split-Path $PSScriptRoot -Parent) 'Launcher.ps1'
 $tokens=$null;$parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$tokens,[ref]$parseErrors)
 if($parseErrors.Count){throw ($parseErrors | Out-String)}
-$names=@('Sync-ReplayLibrary','Get-RecordingFileMessage','Save-Paths','Import-ReplayFiles')
+$names=@('Sync-ReplayLibrary','Get-RecordingFileMessage','Save-Paths','Import-ReplayFiles','Export-ReplayPackage','Import-ReplayPackage')
 foreach($fn in $ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $names},$true)) { . ([ScriptBlock]::Create($fn.Extent.Text)) }
 $folder=Join-Path (Split-Path $PSScriptRoot -Parent) ('dist\library-test-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $folder | Out-Null
@@ -87,3 +87,24 @@ if ((Get-Item (Join-Path $importTarget 'Legacy.replay')).Length -ne 2) {throw 'L
  'PASS: replay-only NoIntro, single-use session and unchanged recording launch'
 }
 & (Join-Path $PSScriptRoot 'test_exit.ps1')
+# Single-file sharing round trip, collision preservation and unsafe archive rejection.
+$package=Join-Path $folder 'shared.zip'
+Export-ReplayPackage $sourceReplay $package | Out-Null
+$roundtrip=Join-Path $folder 'roundtrip'
+Import-ReplayFiles $package $roundtrip | Out-Null
+foreach($extension in @('replay','movement')) {
+ if((Get-FileHash (Join-Path $importSource "Companion.$extension")).Hash -ne (Get-FileHash (Join-Path $roundtrip "Companion.$extension")).Hash){throw 'Package roundtrip changed bytes'}
+}
+$before=(Get-FileHash $package).Hash
+$rejected=$false;try{Export-ReplayPackage $sourceReplay $package | Out-Null}catch{$rejected=$true}
+if(-not $rejected -or (Get-FileHash $package).Hash -ne $before){throw 'Existing ZIP overwritten'}
+$rejected=$false;try{Import-ReplayFiles $package $roundtrip | Out-Null}catch{$rejected=$true}
+if(-not $rejected){throw 'Existing pair overwritten by ZIP import'}
+foreach($names in @(@('../Escape.replay','Escape.movement'),@('A.replay','B.movement'),@('A.replay','A.replay'),@('A.replay'))) {
+ $bad=Join-Path $folder ([guid]::NewGuid().ToString('N')+'.zip')
+ $z=[IO.Compression.ZipFile]::Open($bad,[IO.Compression.ZipArchiveMode]::Create)
+ try {foreach($name in $names){$e=$z.CreateEntry($name);$s=$e.Open();$s.WriteByte(1);$s.Dispose()}}finally{$z.Dispose()}
+ $rejected=$false;try{Import-ReplayFiles $bad (Join-Path $folder 'unsafe') | Out-Null}catch{$rejected=$true}
+ if(-not $rejected){throw 'Invalid archive accepted'}
+}
+'PASS: ZIP pair roundtrip, no overwrite, traversal/mismatched/duplicate/missing entry rejection'

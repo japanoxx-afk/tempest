@@ -19,19 +19,20 @@ $version = (Get-Content (Join-Path $root 'version.json') -Raw | ConvertFrom-Json
  <StackPanel Grid.Row="1" Margin="0,18,0,8"><TextBlock Name="GameLabel" Text="게임 설치 폴더"/><DockPanel><Button Name="BrowseGame" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="GamePath"/></DockPanel><TextBlock Name="ReplayLabel" Text="리플레이 폴더"/><DockPanel><Button Name="BrowseReplay" DockPanel.Dock="Right" Content="찾기"/><TextBox Name="ReplayPath"/></DockPanel></StackPanel>
  <TextBlock Name="LibraryLabel" Grid.Row="2" Text="리플레이 라이브러리 · .replay" FontSize="18" Margin="4,6"/>
  <ListView Grid.Row="3" Name="ReplayList" Background="#1B2935" Foreground="White" Margin="4"><ListView.View><GridView><GridViewColumn Header="파일" DisplayMemberBinding="{Binding Name}" Width="380"/><GridViewColumn Header="수정 시간" DisplayMemberBinding="{Binding LastWriteTime}" Width="200"/><GridViewColumn Header="바이트" DisplayMemberBinding="{Binding Length}" Width="100"/></GridView></ListView.View></ListView>
- <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="게임 실행 · 자동 녹화"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="녹화·재생 모드 설치"/><Button Name="RemoveBridge" Content="녹화·재생 모드 제거"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><TextBlock Name="AutoHint" Text="자동 녹화 · 관전자 재생 기본 적용 (녹화·재생 모드 설치 필요)" Margin="4,8" Foreground="#B9E873"/><Button Name="Play" Content="선택 리플레이 관전자 재생" HorizontalAlignment="Left"/><TextBlock Name="LimitHint" Text="기록 범위: 내 클라이언트가 수신한 정보 · 시간 탐색 미지원. 조작키 설명 버튼에서 재생 조작법을 확인하세요." TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Name="SpeedLabel" Text="리플레이 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="리플레이 배속 적용"/></WrapPanel><TextBlock Name="MovementStatus" TextWrapping="Wrap" Margin="4" Foreground="#B9E873"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
+ <StackPanel Grid.Row="4"><WrapPanel><Button Name="Launch" Content="게임 실행 · 자동 녹화"/><Button Name="Refresh" Content="새로고침 / 경로 저장"/><Button Name="Import" Content="리플레이 가져오기"/><Button Name="Export" Content="공유 파일 저장"/><Button Name="Open" Content="폴더 열기"/></WrapPanel><WrapPanel><Button Name="InstallBridge" Content="녹화·재생 모드 설치"/><Button Name="RemoveBridge" Content="녹화·재생 모드 제거"/><Button Name="Diagnostics" Content="진단 폴더 열기"/></WrapPanel><TextBlock Name="AutoHint" Text="자동 녹화 · 관전자 재생 기본 적용 (녹화·재생 모드 설치 필요)" Margin="4,8" Foreground="#B9E873"/><Button Name="Play" Content="선택 리플레이 관전자 재생" HorizontalAlignment="Left"/><TextBlock Name="LimitHint" Text="기록 범위: 내 클라이언트가 수신한 정보 · 시간 탐색 미지원. 조작키 설명 버튼에서 재생 조작법을 확인하세요." TextWrapping="Wrap" Margin="4,8" Foreground="#FFC778"/><WrapPanel><TextBlock Name="SpeedLabel" Text="리플레이 속도" VerticalAlignment="Center" Margin="4"/><ComboBox Name="PlaybackSpeed" SelectedIndex="1" Width="90" Margin="4"><ComboBoxItem Content="0.5x" Tag="0.5"/><ComboBoxItem Content="1x" Tag="1"/><ComboBoxItem Content="2x" Tag="2"/><ComboBoxItem Content="4x" Tag="4"/></ComboBox><Button Name="ApplySpeed" Content="리플레이 배속 적용"/></WrapPanel><TextBlock Name="MovementStatus" TextWrapping="Wrap" Margin="4" Foreground="#B9E873"/><TextBlock Name="BridgeStatus" TextWrapping="Wrap" Margin="4,4" Foreground="#B9E873"/></StackPanel>
  <TextBlock Grid.Row="5" Name="Status" TextWrapping="Wrap" Margin="4,12,4,0" Foreground="#A8B7C5"/>
  </Grid>
 </Window>
 '@
 $window = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
 $ui = @{}
-@('Language','Help','GameLabel','ReplayLabel','LibraryLabel','AutoHint','LimitHint','SpeedLabel','Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Open','Play','Status','InstallBridge','RemoveBridge','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
+@('Language','Help','GameLabel','ReplayLabel','LibraryLabel','AutoHint','LimitHint','SpeedLabel','Update','Version','GamePath','ReplayPath','BrowseGame','BrowseReplay','ReplayList','Launch','Refresh','Import','Export','Open','Play','Status','InstallBridge','RemoveBridge','Diagnostics','BridgeStatus','PlaybackSpeed','ApplySpeed','MovementStatus') | ForEach-Object { $ui[$_] = $window.FindName($_) }
 $script:english=@{
  'GitHub에서 최신 버전을 확인합니다…'='Checking GitHub for the latest version…';'다운로드 중…'='Downloading…';'다운로드 검증 및 압축 해제 중…'='Verifying download and extracting…'
  '이미 최신 버전입니다.'='The launcher is up to date.';'검증 완료. 런처를 닫고 업데이트를 설치합니다…'='Verified. Closing launcher to install the update…';'업데이트 설치 중…'='Installing update…'
  '업데이트 설치 완료. 런처를 다시 실행합니다.'='Update installed. Restarting launcher.';'업데이트 SHA256 검증에 실패했습니다.'='Update SHA256 verification failed.';'릴리스의 배포 파일 또는 체크섬이 없습니다.'='Release package or checksum is missing.'
  '리플레이 안전 검사 실패 · 게임 빌드와 진단 로그 확인 필요'='Replay safety check failed; check game build and logs'
+ '공유 파일 저장'='Export replay ZIP';'공유용 ZIP 저장 완료: '='Replay ZIP saved: ';'이동 보조 파일이 없어 묶음을 만들 수 없습니다.'='The movement companion is missing.';'빈 기록 파일은 공유할 수 없습니다.'='Empty recordings cannot be shared.';'지원하지 않는 리플레이 묶음입니다.'='Unsupported replay package.';'같은 이름의 replay와 movement 두 파일만 들어 있는 ZIP을 선택하세요.'='Choose a ZIP containing only a matching replay and movement pair.'
  '같은 이름의 리플레이 또는 이동 파일이 이미 있습니다. 원본을 유지합니다.'='A replay or companion with this name already exists. Original files were preserved.'
  '실험적 재생 파일명은 영문, 숫자, 밑줄, 하이픈만 사용할 수 있습니다.'='Replay filenames must contain letters, numbers, underscores or hyphens.'
  '실험적 재생에는 기본 폴더 %LOCALAPPDATA%\Tempest\Saved\Demos를 사용하세요.'='Use the default replay folder: %LOCALAPPDATA%\Tempest\Saved\Demos.'
@@ -201,6 +202,7 @@ $timer.Add_Tick({
 $timer.Start()
 $window.Add_Closed({ $timer.Stop() })
 function Import-ReplayFiles([string]$Source,[string]$Folder) {
+ if ([IO.Path]::GetExtension($Source) -ieq '.zip') { return Import-ReplayPackage $Source $Folder }
  $destination=Join-Path $Folder ([IO.Path]::GetFileName($Source))
  $companion=[IO.Path]::ChangeExtension($Source,'.movement')
  $targetCompanion=[IO.Path]::ChangeExtension($destination,'.movement')
@@ -213,9 +215,70 @@ function Import-ReplayFiles([string]$Source,[string]$Folder) {
  }
  return $destination
 }
+function Export-ReplayPackage([string]$Source,[string]$Destination) {
+ Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+ $companion=[IO.Path]::ChangeExtension($Source,'.movement')
+ if (-not (Test-Path -LiteralPath $companion -PathType Leaf)) { throw '이동 보조 파일이 없어 묶음을 만들 수 없습니다.' }
+ $streams=@();$zip=$null;$output=$null;$created=$false
+ try {
+  # Deny writers while reading either part, so an active recording cannot be exported halfway.
+  foreach($path in @($Source,$companion)) { $streams+=,[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read) }
+  if ($streams[0].Length -eq 0 -or $streams[1].Length -eq 0) { throw '빈 기록 파일은 공유할 수 없습니다.' }
+  $output=[IO.File]::Open($Destination,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$created=$true
+  $zip=New-Object IO.Compression.ZipArchive($output,[IO.Compression.ZipArchiveMode]::Create,$true)
+  $paths=@($Source,$companion)
+  for($i=0;$i -lt 2;$i++) {
+   $entry=$zip.CreateEntry([IO.Path]::GetFileName($paths[$i]),[IO.Compression.CompressionLevel]::Optimal)
+   $target=$entry.Open();try {$streams[$i].CopyTo($target)} finally {$target.Dispose()}
+  }
+  $zip.Dispose();$zip=$null;$output.Dispose();$output=$null
+ } catch {
+  if($zip){$zip.Dispose();$zip=$null};if($output){$output.Dispose();$output=$null}
+  if($created){[IO.File]::Delete($Destination)}
+  throw
+ } finally {if($zip){$zip.Dispose()};if($output){$output.Dispose()};foreach($stream in $streams){$stream.Dispose()}}
+ return $Destination
+}
+function Import-ReplayPackage([string]$Source,[string]$Folder) {
+ Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+ $zip=[IO.Compression.ZipFile]::OpenRead($Source);$stage=$null
+ try {
+  $entries=@($zip.Entries)
+  if($entries.Count -ne 2){throw '같은 이름의 replay와 movement 두 파일만 들어 있는 ZIP을 선택하세요.'}
+  foreach($entry in $entries) {
+   if($entry.FullName -notmatch '^[a-zA-Z0-9_-]+\.(replay|movement)$' -or $entry.Length -le 0 -or $entry.Length -gt 8GB){throw '지원하지 않는 리플레이 묶음입니다.'}
+  }
+  $replay=@($entries | Where-Object {$_.FullName -match '\.replay$'})
+  $movement=@($entries | Where-Object {$_.FullName -match '\.movement$'})
+  if($replay.Count -ne 1 -or $movement.Count -ne 1 -or [IO.Path]::GetFileNameWithoutExtension($replay[0].FullName) -cne [IO.Path]::GetFileNameWithoutExtension($movement[0].FullName)){throw '지원하지 않는 리플레이 묶음입니다.'}
+  foreach($entry in $entries){if(Test-Path -LiteralPath (Join-Path $Folder $entry.FullName)){throw '같은 이름의 리플레이 또는 이동 파일이 이미 있습니다. 원본을 유지합니다.'}}
+  $stage=Join-Path ([IO.Path]::GetTempPath()) ('TempestImport-'+[guid]::NewGuid().ToString('N'))
+  [IO.Directory]::CreateDirectory($stage) | Out-Null
+  foreach($entry in $entries){[IO.Compression.ZipFileExtensions]::ExtractToFile($entry,(Join-Path $stage $entry.FullName),$false)}
+  return Import-ReplayFiles (Join-Path $stage $replay[0].FullName) $Folder
+ } finally {
+  $zip.Dispose()
+  if($stage){foreach($file in [IO.Directory]::GetFiles($stage)){[IO.File]::Delete($file)};[IO.Directory]::Delete($stage)}
+ }
+}
+$ui.Export.Add_Click({
+ try {
+  if(Get-Process -Name 'Tempest*' -ErrorAction SilentlyContinue){throw '게임을 먼저 종료하세요.'}
+  $replay=$ui.ReplayList.SelectedItem
+  if(-not $replay){throw '재생할 파일을 선택하세요.'}
+  $dialog=New-Object Windows.Forms.SaveFileDialog
+  $dialog.Filter='Replay package (*.zip)|*.zip';$dialog.FileName=[IO.Path]::GetFileNameWithoutExtension($replay.Name)+'.zip'
+  try {
+   if($dialog.ShowDialog() -eq 'OK') {
+    Export-ReplayPackage $replay.FullName $dialog.FileName | Out-Null
+    $ui.Status.Text=(Get-LocalizedText '공유용 ZIP 저장 완료: ')+$dialog.FileName
+   }
+  } finally {$dialog.Dispose()}
+ } catch {Show-Error $_}
+})
 $ui.Import.Add_Click({
  try {
-  Save-Paths; $dialog = New-Object Windows.Forms.OpenFileDialog; $dialog.Filter = 'Unreal replay (*.replay)|*.replay'
+  Save-Paths; $dialog = New-Object Windows.Forms.OpenFileDialog; $dialog.Filter = 'Replay / package (*.replay;*.zip)|*.replay;*.zip'
   if ($dialog.ShowDialog() -eq 'OK') {
    Import-ReplayFiles $dialog.FileName $settings.replays | Out-Null; Refresh-Replays
   }; $dialog.Dispose()

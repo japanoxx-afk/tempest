@@ -13,6 +13,7 @@ $timer.Stop();$updateTimer.Stop()
 try {
  $settings.language='en';Set-LauncherLanguage
  if($ui.Help.Content -ne 'Controls' -or $ui.Launch.Content -ne 'Launch game · Auto record'){throw 'English captions failed'}
+ if($ui.Export.Content -ne 'Export replay ZIP'){throw 'ZIP export localization failed'}
  if($ui.ReplayList.View.Columns[0].Header -ne 'File'){throw 'English library columns failed'}
  if($ui.ContainsKey('Probe') -or $window.FindName('Probe')){throw 'Obsolete probe button remains'}
  if((Get-LocalizedText 'Steam에 게임 실행을 요청했습니다.') -ne 'Game launch requested through Steam.'){throw 'English status failed'}
