@@ -34,8 +34,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Launcher UI tests failed' }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_guard.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Replay native guard tests failed' }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/test_install.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Replay runtime install tests failed' }
           ./Build.ps1
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME dist/TempestReplayLauncher.zip dist/TempestReplayLauncher.zip.sha256 --title "Tempest Replay Launcher $env:GITHUB_REF_NAME" --notes-file docs/RELEASE-NOTES.md
+        run: gh release create $env:GITHUB_REF_NAME dist/TempestReplayLauncher.zip dist/TempestReplayLauncher.zip.sha256 vendor/UE4SS_v3.0.1-1176-g1ba38db4.zip --title "Tempest Replay Launcher $env:GITHUB_REF_NAME" --notes-file docs/RELEASE-NOTES.md

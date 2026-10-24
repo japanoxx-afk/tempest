@@ -2,7 +2,7 @@
 . (Join-Path (Split-Path $PSScriptRoot -Parent) 'Update.ps1') -LibraryOnly
 $testRoot=Join-Path (Split-Path $PSScriptRoot -Parent) ('dist\update-test-'+[guid]::NewGuid().ToString('N'))
 $package=Join-Path $testRoot 'package';$target=Join-Path $testRoot 'target';$backup=Join-Path $testRoot 'backup'
-foreach($name in @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','ReplayBridge\Scripts\main.lua','ReplayBridge\Scripts\Movement.lua','ReplayBridge\WatchExit.ps1')) {
+foreach($name in @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','ReplayBridge\Scripts\main.lua','ReplayBridge\Scripts\Movement.lua','ReplayBridge\WatchExit.ps1','vendor\UE4SS_v3.0.1-1176-g1ba38db4.zip')) {
  $path=Join-Path $package $name;New-Item -ItemType Directory -Path (Split-Path $path -Parent) -Force | Out-Null
  [IO.File]::WriteAllText($path,'new-'+$name)
 }
@@ -15,7 +15,8 @@ if([IO.File]::ReadAllText((Join-Path $target 'ReplayBridge\Scripts\main.lua')) -
 if(Test-Path (Join-Path $target 'ReplayBridge\ReplayBridge')){throw 'Nested duplicate bridge folder created'}
 if([IO.File]::ReadAllText((Join-Path $backup 'ReplayBridge\Scripts\main.lua')) -ne 'old-main'){throw 'Backup lost'}
 if([IO.File]::ReadAllText((Join-Path $target 'user-setting.txt')) -ne 'preserve'){throw 'Unrelated file changed'}
-'PASS: update installation replaces nested files, keeps backup and preserves unrelated files'
+if(-not (Test-Path (Join-Path $target 'vendor\UE4SS_v3.0.1-1176-g1ba38db4.zip'))){throw 'Bundled runtime omitted during update'}
+'PASS: update installation replaces nested files, includes runtime, keeps backup and preserves unrelated files'
 $StatusPath=Join-Path $testRoot 'status.json'
 Write-UpdateState 'checking' 'Checking'
 if((Get-Content $StatusPath -Raw | ConvertFrom-Json).state -ne 'checking'){throw 'Progress missing'}

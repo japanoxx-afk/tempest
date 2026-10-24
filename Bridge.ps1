@@ -16,7 +16,16 @@ function Install-ReplayBridge([string]$GamePath) {
  $assetName='UE4SS_v3.0.1-1176-g1ba38db4.zip'
  $expected='e615ee7a2c24344ea5aeef85183d6cfd550f4f6352225976679f9fefffd0b9a5'
  $archive=Join-Path $stage 'ue4ss.zip'
- Invoke-WebRequest "https://github.com/UE4SS-RE/RE-UE4SS/releases/download/experimental-latest/$assetName" -OutFile $archive -UseBasicParsing -TimeoutSec 120
+ # Use the exact tested runtime. Upstream experimental-latest replaces old assets.
+ $bundled=Join-Path $script:BridgeSourceRoot ('vendor\'+$assetName)
+ if($script:BridgeRuntimeArchive){$bundled=$script:BridgeRuntimeArchive}
+ if(Test-Path -LiteralPath $bundled -PathType Leaf){Copy-Item -LiteralPath $bundled -Destination $archive}
+ else {
+  # Old launchers' fixed-list updater can omit vendor/. This immutable release
+  # asset provides the same bytes, never an untested newer UE4SS build.
+  [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12
+  Invoke-WebRequest "https://github.com/japanoxx-afk/tempest/releases/download/v0.3.26/$assetName" -OutFile $archive -UseBasicParsing -TimeoutSec 120
+ }
  if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) { throw 'UE4SS 체크섬 불일치. 설치하지 않았습니다.' }
  $unpack=Join-Path $stage 'files'; Expand-Archive $archive $unpack
  $runtime=Join-Path $unpack 'ue4ss'

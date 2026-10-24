@@ -15,7 +15,7 @@ function Get-UpdateFiles([string]$Package) {
  foreach($required in @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','ReplayBridge\Scripts\main.lua','ReplayBridge\Scripts\Movement.lua','ReplayBridge\WatchExit.ps1')) {
   if(-not (Test-Path -LiteralPath (Join-Path $Package $required) -PathType Leaf)){throw "배포 파일 누락: $required"}
  }
- foreach($name in @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','README.md','ReplayBridge','docs')) {
+ foreach($name in @('Launcher.ps1','Start.cmd','version.json','Update.ps1','Bridge.ps1','README.md','ReplayBridge','vendor','docs')) {
   $path=Join-Path $Package $name
   if(Test-Path -LiteralPath $path -PathType Leaf){$name}
   elseif(Test-Path -LiteralPath $path -PathType Container){
