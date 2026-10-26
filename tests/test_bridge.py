@@ -135,6 +135,7 @@ class BridgeTests(unittest.TestCase):
             RemoveFromParent=function()removed=removed+1 end}
         end
         pc.GetViewportSize=function(self,x,y)x.SizeX=1920;y.SizeY=1080 end
+        local alt='LeftAlt';pc.IsInputKeyDown=function(self,key)return key.KeyName:ToString()==alt end
         local dead,inside=false,false
         bridge.isDead=function()return dead end;bridge.isGarrisoned=function()return inside end
         bridge.audioController=pc;bridge.healthPanel=panel;bridge.visible={unit=true};bridge.cacheTick=1
@@ -149,7 +150,57 @@ class BridgeTests(unittest.TestCase):
         dead=false;bridge:updateHealthBars({u=a},{u=s});bridge.healthHidden=true
         bridge:updateHealthBars({u=a},{u=s});assert(removed==3 and next(bridge.healthBars)==nil)
         bridge.healthHidden=false;bridge:updateHealthBars({u=a},{u=s});assert(bridge.healthBars.u.percent==0.4)
+        alt=false;bridge:updateHealthBars({u=a},{u=s});assert(next(bridge.healthBars)==nil)
+        alt='RightAlt';bridge:updateHealthBars({u=a},{u=s});assert(bridge.healthBars.u.percent==0.4)
+        alt=false;bridge:updateHealthBars({u=a},{u=s});assert(next(bridge.healthBars)==nil)
+        -- Default hide must not project, look up health or touch widget classes.
+        StaticFindObject=function()error('hidden overlay should do no UI lookup')end
+        bridge:updateHealthBars({u=a},{u=s})
+        StaticFindObject=original
+
         """)
+
+    def test_actor_names_are_reused_only_within_a_playback_frame(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local reads=0;local name='a'
+        local actor={GetFullName=function()reads=reads+1;return name end}
+        assert(bridge:actorName(actor)=='a');assert(bridge:actorName(actor)=='a');assert(reads==1)
+        bridge.actorNames={};name='b';assert(bridge:actorName(actor)=='b' and reads==2)
+        bridge:close();assert(bridge.actorNames==nil)
+        """)
+
+    def test_resource_repair_changes_only_presentation_and_restores_shared_proxy(self):
+        self.start('play',replay='TestReplay');self.lua.globals().bridge=self.bridge
+        self.lua.execute("""
+        local calls=0
+        local proxy={IsValid=function()return true end,MyIndex=99,
+          K2_BeginTransition=function(self,a,b)assert(self.MyIndex==0 and a==3 and b==0);calls=calls+1 end,
+          K2_ProcessTransition=function(self,p,dt)assert(p==1 and dt==0);calls=calls+1 end,
+          K2_EndTransition=function()calls=calls+1 end}
+        local e={Proxy=proxy,CurrentStage=3,NextStage=3,TransitionProgress=1}
+        local volume={FieldTileElements={e}}
+        local tile={GrowthStage=0,ElementsStage=3,Resource=0,bLocallyVisible=false,
+          ElementIndices={ForEach=function(self,fn)fn(1,{get=function()return 0 end})end}}
+        assert(bridge:repairResourceTile(volume,tile)==1)
+        assert(tile.Resource==0 and tile.GrowthStage==0 and tile.bLocallyVisible and tile.ElementsStage==0)
+        assert(e.CurrentStage==0 and e.NextStage==0 and proxy.MyIndex==99 and calls==3)
+        assert(bridge:repairResourceTile(volume,tile)==0 and calls==3)
+        -- Preserve native ongoing transitions and rotten presentation.
+        e.CurrentStage=2;e.NextStage=3;tile.GrowthStage=3;tile.ElementsStage=3
+        assert(bridge:repairResourceTile(volume,tile)==0 and e.CurrentStage==2)
+        e.CurrentStage=5;e.NextStage=5;tile.GrowthStage=0;tile.ElementsStage=5
+        assert(bridge:repairResourceTile(volume,tile)==0 and tile.ElementsStage==5)
+        -- A failing blueprint must not leave the shared proxy on another tile.
+        e.CurrentStage=3;e.NextStage=3;tile.ElementsStage=3
+        proxy.K2_ProcessTransition=function()error('fixture failure')end
+        local ok=pcall(function()bridge:repairResourceTile(volume,tile)end)
+        assert(not ok and proxy.MyIndex==99)
+        """)
+
+    def test_resource_repair_never_runs_during_recording(self):
+        self.start('record');self.lua.globals().bridge=self.bridge
+        self.lua.execute("bridge:repairResourceTile(nil,nil);bridge:updateResourceFields();assert(bridge.resourceKnown==nil)")
 
     def test_replay_requires_current_session_native_guard_before_demoplay(self):
         self.start('play',replay='TestReplay')

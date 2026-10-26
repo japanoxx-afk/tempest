@@ -154,8 +154,15 @@ local function gameLoop(interval, callback)
 end
 local worldKey, recordingWorld, startedAt, playSent, prepared
 local movementIO={}
+function movementIO:actorName(actor)
+    if mode~='play' then return actor:GetFullName() end
+    self.actorNames=self.actorNames or {}
+    local name=self.actorNames[actor]
+    if not name then name=actor:GetFullName();self.actorNames[actor]=name end
+    return name
+end
 function movementIO:isDead(actor)
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if self.visualDeaths and self.visualDeaths[name] then return true end
     if mode=='play' and self.deadFrame and self.deadFrame[name]~=nil then return self.deadFrame[name] end
     local ok,dead=pcall(function() return actor.PawnDeath.bDied end)
@@ -174,7 +181,7 @@ do
 end
 function movementIO:identity(actor)
     if not self.codec or not valid(actor) or not actor:IsA('/Script/Tempest.TedPawn') then return nil end
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if not self:isPresentationPawn(actor) then return nil end
     local component=actor.EcsActor
     if not valid(component) then return nil end
@@ -199,8 +206,10 @@ function movementIO:close()
     self.audioController=nil
     self.pendingWrecks=nil;self.wreckPresented=nil;self.deadStatusEpoch=nil;self.deadPresentationActors=nil
     self.animationFrames={}
+    self.actorNames=nil
     self.garrisonFrame=nil;self.appliedPoses=nil;self.locomotionCache=nil;self.nativeHealthCache=nil
     self.healthPanel=nil;self.healthBars=nil;self.healthFailed=nil;self.healthHidden=nil;self.healthOffsets=nil
+    self.resourceKnown=nil;self.resourceDirty=nil;self.resourcePoll=nil;self.resourceFailed=nil
     self.candidates=nil;self.candidateFrame=nil;self.candidateEpoch=nil;self.catalogClasses=nil
     self.retiredResources=nil;self.retiredResourceKeys=nil;self.retiredResourceCursor=nil;self.projectiles=nil;self.projectileActors=nil;self.projectileTime=nil;self.doctrineApplied=nil
     self.actorCache=nil;self.finishedTracks=nil;self.contained=nil;self.containerEpoch=nil;self.watchedPawns=nil;self.pawnKinds=nil;self.deadFrame=nil;self.markerStates=nil;self.neutralMeshes=nil;self.neutralColors=nil;self.garrisonMeshes=nil;self.disabledTicks=nil;self.corpseQueue=nil;self.doctrineSnapshot=nil;self.doctrineSignature=nil;self.doctrineAssets=nil;self.popupCache=nil
@@ -227,7 +236,7 @@ function movementIO:resetMarkers()
     self.markerTime=nil
 end
 function movementIO:updateLocomotion(actor,velocity)
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     self.locomotionCache=self.locomotionCache or {}
     local cached=self.locomotionCache[name]
     if not cached or cached.epoch~=self.cacheTick or not valid(cached.mesh) or (cached.anim and not valid(cached.anim)) then
@@ -535,7 +544,7 @@ function movementIO:presentationTick(actor)
     -- Their primary tick can then enter native weapon evaluation with null data.
     -- Mesh/timeline components retain their own ticks for visual playback.
     self.disabledTicks=self.disabledTicks or {}
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if not self.disabledTicks[name] and not valid(member(actor,'DefaultAttributeSet')) then
         actor:SetActorTickEnabled(false);self.disabledTicks[name]=true
     end
@@ -554,7 +563,7 @@ function movementIO:neutralMesh(actor)
         -- while their healthy model is a StaticMesh asset. Keep the game's
         -- proxy intact and add a collision-free presentation component.
         self.neutralMeshes=self.neutralMeshes or {}
-        local name=actor:GetFullName();local component=self.neutralMeshes[name]
+        local name=self:actorName(actor);local component=self.neutralMeshes[name]
         if not valid(component) then
             local cls=StaticFindObject('/Script/Engine.StaticMeshComponent')
             if not valid(cls) then return end
@@ -573,7 +582,7 @@ function movementIO:neutralColor(actor,component)
     if mode~='play' then return end
     local owner=actor:GetOwningPlayerID()
     self.neutralColors=self.neutralColors or {}
-    local name=actor:GetFullName();local state=self.neutralColors[name]
+    local name=self:actorName(actor);local state=self.neutralColors[name]
     if state and state.owner==owner and state.component==component then return end
     local utils=StaticFindObject('/Script/Tempest.Default__TedUtils')
     local colors=StaticFindObject('/Script/RTSColor.Default__RTSColorSubsystem')
@@ -597,7 +606,7 @@ function movementIO:neutralColor(actor,component)
 end
 function movementIO:isGarrisoned(actor)
     if mode~='play' then return false end
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if self.garrisonFrame and self.garrisonFrame[name]~=nil then return self.garrisonFrame[name] end
     local contained=self.contained and self.contained[name]~=nil or false
     if not contained and actor:IsInContainer() then
@@ -634,7 +643,7 @@ end
 function movementIO:garrisonVisuals(actor)
     if mode~='play' then return end
     self.garrisonMeshes=self.garrisonMeshes or {}
-    local name=actor:GetFullName();local state=self.garrisonMeshes[name]
+    local name=self:actorName(actor);local state=self.garrisonMeshes[name]
     local function restore(entry)
         local c=entry.component
         if valid(c) then local hidden=entry.hidden==true;if entry.primary then hidden=false end;c:SetHiddenInGame(hidden,false);c:SetVisibility(entry.primary or entry.visible~=false,false) end
@@ -702,7 +711,7 @@ end
 function movementIO:deathVisuals(actor,dead)
     if not dead then return end
     self.visualDeaths=self.visualDeaths or {};self.deathPresented=self.deathPresented or {}
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if not self.deathPresented[name] then
         if self.absent and self.absent[name] then actor:SetActorHiddenInGame(false);self.absent[name]=nil end
         self:presentationTick(actor)
@@ -736,7 +745,7 @@ end
 function movementIO:buildingVisuals(actor,state)
     if not actor:IsA('/Script/Tempest.TedStructureBase') or actor:IsA('/Script/Tempest.TedConformationBase') then return end
     self.buildingStates=self.buildingStates or {};self.visualDeaths=self.visualDeaths or {}
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if state==3 then
         self:deathVisuals(actor,true)
         self.buildingStates[name]=3
@@ -985,11 +994,69 @@ function movementIO:updateReplayAudio(time)
         write(home..'audio-state.txt',session..'\ntime='..time..'\nplayed='..s.played..'\nnative_duplicates='..s.native..'\nmissing='..s.missing..'\nqueued='..s.queued..'\nno_tag='..s.noTag..'\nno_cue='..s.noCue..'\nspawn_failed='..s.spawnFailed..'\nlast_missing_tag='..tostring(self.audio.lastMissingTag)..'\nlast_spawn_error='..tostring(self.audio.lastSpawnError)..'\ndropped='..s.dropped..'\nactive='..#self.audio.owned..'\npaused='..tostring(paused))
     end
 end
+function movementIO:repairResourceTile(volume,tile)
+    if mode~='play' then return 0 end
+    local target=tile.GrowthStage
+    if type(target)~='number' or target<0 or target>4 then return 0 end
+    -- Rotten is a legitimate presentation stage after harvesting. Preserve it
+    -- until the native field transitions again; never change Resource/GrowthStage.
+    if target==0 and tile.ElementsStage==5 then target=5 end
+    if tile.bLocallyVisible and tile.ElementsStage==target then return 0 end
+    tile.bLocallyVisible=true
+    local corrected=0
+    tile.ElementIndices:ForEach(function(_,ref)
+        local index=ref:get();local element=volume.FieldTileElements[index+1]
+        local proxy=element.Proxy
+        if valid(proxy) and element.NextStage~=target then
+            -- Proxies are shared across many tiles: scope and restore MyIndex.
+            local saved=proxy.MyIndex;proxy.MyIndex=index
+            local ok,err=pcall(function()
+                local previous=element.CurrentStage
+                element.NextStage=target;element.TransitionProgress=0
+                proxy:K2_BeginTransition(previous,target)
+                proxy:K2_ProcessTransition(1,0,previous,target)
+                proxy:K2_EndTransition(previous,target)
+                element.CurrentStage=target;element.TransitionProgress=1
+            end)
+            proxy.MyIndex=saved
+            if not ok then error(err) end
+            corrected=corrected+1
+        end
+    end)
+    tile.ElementsStage=target
+    return corrected
+end
+function movementIO:updateResourceFields()
+    if mode~='play' or self.resourceFailed then return end
+    local now=os.clock()
+    if self.resourcePoll and now-self.resourcePoll<0.25 then return end
+    self.resourcePoll=now;self.resourceKnown=self.resourceKnown or {};self.resourceDirty=self.resourceDirty or {}
+    for _,volume in ipairs(self:cachedActors('TempestFieldVolume')) do
+        if valid(volume) then
+            local name=volume:GetFullName()
+            if not valid(self.resourceKnown[name]) or self.resourceDirty[name] then
+                volume.FieldTileData:ForEach(function(_,ref)self:repairResourceTile(volume,ref:get())end)
+                self.resourceKnown[name]=volume;self.resourceDirty[name]=nil
+            end
+        end
+    end
+end
 function movementIO:updateHealthBars(actors,samples)
     if mode~='play' then return end
-    if self.healthHidden then actors={} end
     local pc=self.audioController
     if not valid(pc) then return end
+    local ok,held=pcall(function()
+        return pc:IsInputKeyDown({KeyName=FName('LeftAlt')}) or pc:IsInputKeyDown({KeyName=FName('RightAlt')})
+    end)
+    if self.healthHidden or not ok or not held then
+        -- The common case does no projection, native health lookup or UMG work.
+        -- Polling held state also handles key release while focus changes.
+        for key,bar in pairs(self.healthBars or {}) do
+            if valid(bar) then bar:RemoveFromParent() end
+            self.healthBars[key]=nil
+        end
+        return
+    end
     local panel=self.healthPanel
     if not valid(panel) then
         for _,hud in ipairs(self:cachedActors('TedThirdPartySpectatorHud')) do
@@ -1030,7 +1097,7 @@ function movementIO:updateHealthBars(actors,samples)
             end
             hp=cached.health
         end
-        if hp and hp.maximum>0 and hp.current>0 and sample and not sample.dead and sample.building~=3 and not self:isDead(actor) and not self:isGarrisoned(actor) and self.visible[actor:GetFullName()] then
+        if hp and hp.maximum>0 and hp.current>0 and sample and not sample.dead and sample.building~=3 and not self:isDead(actor) and not self:isGarrisoned(actor) and self.visible[self:actorName(actor)] then
             local p=sample.position
             self.healthOffsets=self.healthOffsets or {}
             local offset=self.healthOffsets[key]
@@ -1086,6 +1153,7 @@ function movementIO:applyPose(actor,name,sample)
     self.appliedPoses[name]={x=p.X,y=p.Y,z=p.Z,pitch=r.Pitch,yaw=r.Yaw,roll=r.Roll,epoch=self.cacheTick}
 end
 function movementIO:play(subsystem)
+    self.actorNames={} -- frame-local: no stale identity or lifetime retention
     self.animationFrames={}
     self.deadFrame={}
     self.garrisonFrame={}
@@ -1093,6 +1161,8 @@ function movementIO:play(subsystem)
     self.playTime=subsystem:GetReplayCurrentTime()
     self.playTicks=(self.playTicks or 0)+1
     self.cacheTick=math.floor(self.playTicks/15)
+    local resourceOK,resourceError=pcall(function()self:updateResourceFields()end)
+    if not resourceOK then self.resourceFailed=true;status('resource_visual_error',tostring(resourceError)) end
     self:refreshContainers()
     local audioOK,audioError=pcall(function()self:updateReplayAudio(self.playTime)end)
     if not audioOK then
@@ -1142,7 +1212,7 @@ function movementIO:play(subsystem)
     candidates={}
     for _,actor in ipairs(self:cachedActors('TedPawn')) do
         if valid(actor) then
-            local actorName=actor:GetFullName()
+            local actorName=self:actorName(actor)
             if self.visualDeaths and self.visualDeaths[actorName] and self.garrisonMeshes and self.garrisonMeshes[actorName] then self:garrisonVisuals(actor) end
             if not (self.visualDeaths and self.visualDeaths[actorName]) then
             self:garrisonVisuals(actor)
@@ -1150,7 +1220,7 @@ function movementIO:play(subsystem)
             self.watchedPawns=self.watchedPawns or {}
             if not self.watchedPawns[actorName] then self:watchDeath(actor);self.watchedPawns[actorName]=true end
             if self:isDead(actor) then self:deathVisuals(actor,true) end
-            local name=actor:GetFullName()
+            local name=self:actorName(actor)
             if self:isPresentationPawn(actor) then
                 self.pawnKinds=self.pawnKinds or {}
                 local kind=self.pawnKinds[name]
@@ -1202,7 +1272,10 @@ function movementIO:play(subsystem)
         end
         if actor and (not kind or kind.structure) then self:buildingVisuals(actor,sample.building) end
         if actor and not self:isDead(actor) and not self:isGarrisoned(actor) and (kind and not kind.site or self:siteVisuals(actor,key,sample,time)) then
-            local name=actor:GetFullName();visible[name]=true;self.managed[name]=true
+            local name=self:actorName(actor);visible[name]=true;self.managed[name]=true
+            -- Native client-demo bars can be empty/duplicated. The held-Alt
+            -- overlay owns replay health presentation, including default hide.
+            if not actor.bDisableHUDBars then actor.bDisableHUDBars=true end
             if actor:IsInContainer() then containerCorrections=containerCorrections+1 end
             if not self.visible or not self.visible[name] then
                 if self.appliedPoses then self.appliedPoses[name]=nil end
@@ -1272,7 +1345,7 @@ function movementIO:updateMarkers(actors,samples)
                 local signature=table.concat({size.X,size.Y,origin.X,origin.Y},':') -- world bounds are fixed for this replay map
                 for key,actor in pairs(actors) do
                     local sample=samples[key]
-                    if sample and not actor:IsAlive() and not self:isDead(actor) and not self:isGarrisoned(actor) and not (self.absent and self.absent[actor:GetFullName()]) then
+                    if sample and not actor:IsAlive() and not self:isDead(actor) and not self:isGarrisoned(actor) and not (self.absent and self.absent[self:actorName(actor)]) then
                         seen[key]=true
                         local pin=pins[key]
                         local state=states[key]
@@ -1320,7 +1393,7 @@ end
 function movementIO:alive(actor)
     if self:isDead(actor) then return false end
     if self:isGarrisoned(actor) then return false end
-    local name=actor:GetFullName()
+    local name=self:actorName(actor)
     if self.absent and self.absent[name] then return false end
     return (self.visible and self.visible[name]) or actor:IsAlive()
 end
@@ -1714,6 +1787,19 @@ local function configureViewer(pc)
 end
 if mode == 'play' then
     movementIO:installDoctrineHover()
+    for _,event in ipairs({'OnRep_RepFieldTileStage','OnRep_RepFieldTilesVisibility'}) do
+        local path='/Script/Tempest.TempestFieldVolume:'..event
+        if valid(StaticFindObject(path)) then
+            RegisterHook(path,function(context)
+                if viewerStopped or travelling then return end
+                local volume=context:get()
+                if valid(volume) then
+                    movementIO.resourceDirty=movementIO.resourceDirty or {}
+                    movementIO.resourceDirty[volume:GetFullName()]=true
+                end
+            end)
+        end
+    end
     local function bind(key, action)
         RegisterKeyBind(key, function()
             ExecuteInGameThread(function()
@@ -1777,6 +1863,7 @@ if mode == 'play' then
         end)
         hudHidden=not hudHidden
         movementIO.healthHidden=hudHidden
+        movementIO.resourceKnown=nil -- HUD/FoW rebuilds can reset local tile visibility.
         -- Panel callbacks can invalidate the replay visibility channels even
         -- while the HUD is hidden; the world itself must remain visible.
         movementIO.visible={}

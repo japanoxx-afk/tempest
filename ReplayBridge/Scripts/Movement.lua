@@ -243,10 +243,25 @@ function M.match(tracks,samples,actors,bound)
         end -- Retired tracks must never attach to a newly produced actor.
     end
     local proposals,competition,cohorts={},{},{}
+    local buckets
     for key in pairs(samples) do
         if not bound[key] and not samples[key].dead and samples[key].building~=3 then
             local t=tracks[key];local best,score,runner=nil,math.huge,math.huge;local ties={}
-            for _,a in ipairs(actors) do
+            -- Build only when an unbound track needs discovery. Preserve actor
+            -- ordering and the exact matching rules, but skip unrelated classes
+            -- and owners instead of scanning every actor for every new unit.
+            if not buckets then
+                buckets={}
+                for _,a in ipairs(actors) do
+                    if a.eligible~=false and not claimed[a.name] then
+                        local owners=buckets[a.class] or {};buckets[a.class]=owners
+                        local list=owners[a.owner] or {};owners[a.owner]=list
+                        list[#list+1]=a
+                    end
+                end
+            end
+            local owners=t and buckets[t.class]
+            for _,a in ipairs(owners and owners[t.owner] or {}) do
                 if t and t.position and a.eligible~=false and not claimed[a.name] and a.class==t.class and a.owner==t.owner then
                     local p,q=a.position,t.position
                     local distance=(p.X-q.X)^2+(p.Y-q.Y)^2+(p.Z-q.Z)^2

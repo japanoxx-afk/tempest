@@ -28,6 +28,26 @@ class MovementTests(unittest.TestCase):
     def create(self):
         self.lua.execute("w=M.writer(path,'Test');w:frame(0,{unit(0,170)});w:frame(1,{unit(100,-170)});w:frame(2,{});w:close();r=M.reader(path,'Test')")
 
+    def test_indexed_matching_preserves_identity_among_unrelated_owners_and_classes(self):
+        self.lua.execute("""
+        local actors,tracks,samples,bound={},{},{},{}
+        for i=1,1200 do
+          actors[i]={name='a'..i,class='C'..(i%100),owner=i%4,
+            position={X=i*300,Y=0,Z=0},born=1}
+        end
+        for i=1,400 do
+          local key='u'..i
+          tracks[key]={class=actors[i].class,owner=actors[i].owner,position=actors[i].position,time=1}
+          samples[key]={}
+        end
+        local matched=M.match(tracks,samples,actors,bound)
+        for i=1,400 do assert(matched['u'..i].name=='a'..i)end
+        -- Bound units remain stable when unrelated actors disappear.
+        local retained={};for i=1,400 do retained[i]=actors[i]end
+        matched=M.match(tracks,samples,retained,bound)
+        for i=1,400 do assert(matched['u'..i].name=='a'..i)end
+        """)
+
     def test_health_is_recorded_discretely_without_future_damage_or_healing(self):
         self.lua.execute("""
         w=M.writer(path,'Test');local u=unit(0);u.health={current=100,maximum=100};w:frame(0,{u})

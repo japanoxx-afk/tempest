@@ -94,6 +94,7 @@ Replay controls
 Mouse at screen edge: move camera. Click minimap: move camera.
 Select a unit, then C: toggle tracking. F6: cycle starting bases.
 U: toggle spectator HUD. I: toggle resource statistics.
+Hold Alt: show unit/building health bars; release to hide.
 Q / W / E / R / T / Y / A / S: select statistics in dropdown order.
 1 / 2 / 4: select 1x / 2x / 4x. F7: cycle speeds. F8: pause/resume.
 Exit: game menu > Main menu > Confirm (closes the replay process).
@@ -106,6 +107,7 @@ Seeking is unsupported. Launcher language does not change the game's language.
 마우스를 화면 가장자리로 이동: 카메라 이동 / 미니맵 클릭: 해당 위치로 이동
 유닛 선택 후 C: 카메라 추적 켜기·끄기 / F6: 본진 순환
 U: 관전자 HUD 숨기기·표시 / I: 자원 통계 숨기기·표시
+Alt 누르는 동안: 유닛·건물 체력바 표시 / 떼면 숨김
 Q / W / E / R / T / Y / A / S: 상세 통계 드롭다운 순서대로 전환
 1 / 2 / 4: 1배 / 2배 / 4배속 / F7: 배속 순환 / F8: 일시정지·재개
 종료: 게임 메뉴 > 메인 메뉴 > 확인 (리플레이 게임 프로세스 종료)
